@@ -11,6 +11,7 @@ from telegram.constants import ParseMode
 from config import AppConfig
 from models.liquidity_zone import LiquidityZone, ZoneType
 from utils.logger import setup_logger
+from utils.trade_bias import get_bias
 
 logger = setup_logger(__name__)
 
@@ -54,9 +55,14 @@ class TelegramNotifier:
             disable_web_page_preview=True,
         )
 
+    def _bias_block(self, zone: LiquidityZone, *, is_sweep: bool) -> str:
+        bias = get_bias(zone, is_sweep=is_sweep)
+        return f"\n{bias.line}\n"
+
     async def notify_eqh(self, zone: LiquidityZone) -> None:
         msg = (
             f"🔴 <b>EQH détecté</b>\n"
+            f"{self._bias_block(zone, is_sweep=False)}"
             f"Pair : <code>{zone.display_symbol}</code>\n"
             f"TF : <code>{zone.timeframe}</code>\n"
             f"Prix : <code>{zone.sweep_level:.4f}</code>\n"
@@ -70,6 +76,7 @@ class TelegramNotifier:
     async def notify_eql(self, zone: LiquidityZone) -> None:
         msg = (
             f"🟢 <b>EQL détecté</b>\n"
+            f"{self._bias_block(zone, is_sweep=False)}"
             f"Pair : <code>{zone.display_symbol}</code>\n"
             f"TF : <code>{zone.timeframe}</code>\n"
             f"Prix : <code>{zone.sweep_level:.4f}</code>\n"
@@ -83,6 +90,7 @@ class TelegramNotifier:
     async def notify_eqh_sweep(self, zone: LiquidityZone) -> None:
         msg = (
             f"⚠️ <b>EQH SWEEP</b>\n"
+            f"{self._bias_block(zone, is_sweep=True)}"
             f"Pair : <code>{zone.display_symbol}</code>\n"
             f"TF : <code>{zone.timeframe}</code>\n"
             f"Niveau : <code>{zone.sweep_level:.4f}</code>\n"
@@ -95,6 +103,7 @@ class TelegramNotifier:
     async def notify_eql_sweep(self, zone: LiquidityZone) -> None:
         msg = (
             f"⚠️ <b>EQL SWEEP</b>\n"
+            f"{self._bias_block(zone, is_sweep=True)}"
             f"Pair : <code>{zone.display_symbol}</code>\n"
             f"TF : <code>{zone.timeframe}</code>\n"
             f"Niveau : <code>{zone.sweep_level:.4f}</code>\n"
