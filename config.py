@@ -11,6 +11,11 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
+def _default_exchange() -> str:
+    """Bybit/OKX fonctionnent sur Railway ; Binance.com est geo-bloqué (451)."""
+    return os.getenv("EXCHANGE", "bybit" if os.getenv("RAILWAY_ENVIRONMENT") else "binance")
+
+
 @dataclass(frozen=True)
 class PivotConfig:
     """Défauts LuxAlgo pour 5m (AAVE scalping)."""
@@ -28,6 +33,16 @@ class ScanConfig:
     ohlcv_limit: int = 300
     poll_interval_sec: float = 5.0
     min_bars: int = 80
+
+
+@dataclass(frozen=True)
+class ExchangeConfig:
+    id: str = field(default_factory=_default_exchange)
+    fallback: bool = field(
+        default_factory=lambda: os.getenv("EXCHANGE_FALLBACK", "true").lower() in ("1", "true", "yes")
+    )
+    api_key: str = field(default_factory=lambda: os.getenv("EXCHANGE_API_KEY", "") or os.getenv("BINANCE_API_KEY", ""))
+    api_secret: str = field(default_factory=lambda: os.getenv("EXCHANGE_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", ""))
 
 
 @dataclass(frozen=True)
@@ -49,15 +64,9 @@ class TelegramConfig:
     chat_id: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
 
 
-@dataclass(frozen=True)
-class BinanceConfig:
-    api_key: str = field(default_factory=lambda: os.getenv("BINANCE_API_KEY", ""))
-    api_secret: str = field(default_factory=lambda: os.getenv("BINANCE_API_SECRET", ""))
-
-
 @dataclass
 class AppConfig:
-    binance: BinanceConfig = field(default_factory=BinanceConfig)
+    exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     pivot: PivotConfig = field(default_factory=PivotConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)

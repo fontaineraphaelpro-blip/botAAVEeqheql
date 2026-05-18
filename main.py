@@ -43,22 +43,23 @@ class AAVEEqhEqlBot:
         self.cooldown = SignalCooldown(config)
 
     async def run(self) -> None:
-        await self.market.start()
-        await self.telegram.start()
-
-        symbols = ", ".join(self.config.scan.symbols)
-        tfs = ", ".join(self.config.scan.timeframes)
-        await self.telegram.send_raw(
-            f"✅ <b>Bot EQH/EQL démarré</b>\n"
-            f"Pair(s) : <code>{symbols}</code>\n"
-            f"TF : <code>{tfs}</code>\n"
-            f"Pivot L/R : <code>{self.config.pivot.pivot_left}</code> / "
-            f"<code>{self.config.pivot.pivot_right}</code>\n"
-            f"Seuil : <code>{self.config.pivot.threshold_pct}%</code>"
-        )
-        logger.info("Bot démarré — %s | %s", symbols, tfs)
-
         try:
+            await self.market.start()
+            await self.telegram.start()
+
+            symbols = ", ".join(self.config.scan.symbols)
+            tfs = ", ".join(self.config.scan.timeframes)
+            await self.telegram.send_raw(
+                f"✅ <b>Bot EQH/EQL démarré</b>\n"
+                f"Exchange : <code>{self.market.exchange_id}</code>\n"
+                f"Pair(s) : <code>{symbols}</code>\n"
+                f"TF : <code>{tfs}</code>\n"
+                f"Pivot L/R : <code>{self.config.pivot.pivot_left}</code> / "
+                f"<code>{self.config.pivot.pivot_right}</code>\n"
+                f"Seuil : <code>{self.config.pivot.threshold_pct}%</code>"
+            )
+            logger.info("Bot demarre — %s | %s | %s", self.market.exchange_id, symbols, tfs)
+
             while True:
                 tasks = [
                     self._scan(symbol, tf)

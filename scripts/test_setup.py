@@ -84,24 +84,30 @@ async def test_telegram() -> bool:
         return False
 
 
-async def test_binance() -> bool:
-    import ccxt.async_support as ccxt
+async def test_exchange() -> bool:
+    sys.path.insert(0, str(ROOT))
+    from config import get_config
+    from scanner.market_data import MarketDataService
 
-    exchange = ccxt.binance({"enableRateLimit": True})
+    market = MarketDataService(get_config())
     try:
-        ohlcv = await exchange.fetch_ohlcv("AAVE/USDT", "5m", limit=5)
-        last = ohlcv[-1]
-        print(f"[OK] Binance AAVE/USDT 5m - derniere close: {last[4]}")
+        await market.start()
+        df = await market.fetch_ohlcv("AAVE/USDT", "5m")
+        last = float(df["close"].iloc[-1])
+        print(f"[OK] {market.exchange_id} AAVE/USDT 5m - derniere close: {last}")
         return True
+    except Exception as exc:
+        print(f"[FAIL] Exchange: {exc}")
+        return False
     finally:
-        await exchange.close()
+        await market.close()
 
 
 async def main() -> None:
     print("=== Test configuration bot AAVE ===\n")
     ok_tg = await test_telegram()
     print()
-    ok_bn = await test_binance()
+    ok_bn = await test_exchange()
     print()
     if ok_tg and ok_bn:
         print("[OK] Tout est pret - lance: python main.py")
