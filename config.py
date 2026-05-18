@@ -64,7 +64,13 @@ class AppConfig:
     volume: VolumeFilterConfig = field(default_factory=VolumeFilterConfig)
     cooldown: CooldownConfig = field(default_factory=CooldownConfig)
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
-    log_file: str | None = os.getenv("LOG_FILE", "logs/bot.log")
+    log_file: str | None = field(
+        default_factory=lambda: (
+            None
+            if os.getenv("RAILWAY_ENVIRONMENT")
+            else os.getenv("LOG_FILE", "logs/bot.log") or None
+        )
+    )
 
 
 def get_config() -> AppConfig:
