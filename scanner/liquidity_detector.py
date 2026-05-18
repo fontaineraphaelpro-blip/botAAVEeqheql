@@ -46,13 +46,16 @@ class LiquidityDetector:
         timeframe: str,
         df: pd.DataFrame,
         last_closed_ts: int,
+        *,
+        record_only: bool = False,
     ) -> ScanResult:
         """Traite uniquement les nouvelles bougies fermées (évite doublons)."""
         state = self._state(symbol, timeframe)
-        if state.last_processed_ts == last_closed_ts:
+        if not record_only and state.last_processed_ts == last_closed_ts:
             return ScanResult()
 
-        state.last_processed_ts = last_closed_ts
+        if not record_only:
+            state.last_processed_ts = last_closed_ts
 
         left = self.config.pivot.pivot_left
         right = self.config.pivot.pivot_right
@@ -73,7 +76,8 @@ class LiquidityDetector:
                 if zone.dedupe_key() not in self._alerted_zones:
                     zone.score = self._score(df, zone)
                     result.new_zones.append(zone)
-                    self._alerted_zones.add(zone.dedupe_key())
+                    if not record_only:
+                        self._alerted_zones.add(zone.dedupe_key())
                 state.active_zones.append(zone)
 
             state.historical_highs.appendleft(
@@ -88,7 +92,8 @@ class LiquidityDetector:
                 if zone.dedupe_key() not in self._alerted_zones:
                     zone.score = self._score(df, zone)
                     result.new_zones.append(zone)
-                    self._alerted_zones.add(zone.dedupe_key())
+                    if not record_only:
+                        self._alerted_zones.add(zone.dedupe_key())
                 state.active_zones.append(zone)
 
             state.historical_lows.appendleft(
@@ -103,6 +108,34 @@ class LiquidityDetector:
             state.active_zones.pop(0)
 
         return result
+
+    def warmup(self, symbol: str, timeframe: str, df: pd.DataFrame) -> int:
+        """
+        Rejoue l'historique bougie par bougie pour remplir les pivots
+        (sinon EQH/EQL impossibles juste apres un redeploy).
+        """
+        closed = df.iloc[:-1] if len(df) > 1 else df
+        min_bars = self.config.scan.min_bars
+        zones_found = 0
+
+        for i in range(min_bars, len(closed)):
+            slice_df = closed.iloc[: i + 1]
+            ts = int(slice_df["timestamp"].iloc[-1].timestamp())
+            result = self.process(symbol, timeframe, slice_df, ts, record_only=True)
+            zones_found += len(result.new_zones)
+
+        state = self._state(symbol, timeframe)
+        state.last_processed_ts = None
+        logger.info(
+            "Warmup %s %s: %d barres, highs=%d lows=%d, zones historiques=%d",
+            symbol,
+            timeframe,
+            len(closed) - min_bars,
+            len(state.historical_highs),
+            len(state.historical_lows),
+            zones_found,
+        )
+        return zones_found
 
     def _try_eqh(
         self,

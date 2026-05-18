@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
+import asyncio
 import aiohttp
 
 BINANCE_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h"}
@@ -72,24 +73,55 @@ class KucoinProvider(_HttpProvider):
 
         pair = _symbol_dash(symbol)
         url = "https://api.kucoin.com/api/v1/market/candles"
-        params: dict = {"type": tf, "symbol": pair}
+
         if since_ms:
-            params["startAt"] = since_ms // 1000
+            params: dict = {"type": tf, "symbol": pair, "startAt": since_ms // 1000}
+            session = await self._get_session()
+            async with session.get(url, params=params) as resp:
+                resp.raise_for_status()
+                body = await resp.json()
+            if body.get("code") != "200000":
+                raise RuntimeError(f"KuCoin API: {body}")
+            rows = body.get("data") or []
+            ohlcv = _parse_kucoin_rows(rows, limit)
+            return ohlcv[-limit:]
 
+        import time as _time
+
+        all_rows: list = []
+        end_at = int(_time.time())
         session = await self._get_session()
-        async with session.get(url, params=params) as resp:
-            resp.raise_for_status()
-            body = await resp.json()
-        if body.get("code") != "200000":
-            raise RuntimeError(f"KuCoin API: {body}")
+        while len(all_rows) < limit:
+            params = {"type": tf, "symbol": pair, "endAt": end_at}
+            async with session.get(url, params=params) as resp:
+                resp.raise_for_status()
+                body = await resp.json()
+            if body.get("code") != "200000":
+                raise RuntimeError(f"KuCoin API: {body}")
+            batch = body.get("data") or []
+            if not batch:
+                break
+            parsed = _parse_kucoin_rows(batch, limit * 2)
+            if not parsed:
+                break
+            all_rows = parsed + all_rows
+            oldest_ts = parsed[0][0] // 1000
+            end_at = oldest_ts - 1
+            if len(batch) < 100:
+                break
+            await asyncio.sleep(0.12)
 
-        rows = body.get("data") or []
-        # KuCoin: [time, open, close, high, low, volume, turnover] — ordre anti-chrono
-        ohlcv = []
-        for r in reversed(rows[:limit]):
-            ts, o, c, h, lo, vol = int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])
-            ohlcv.append([ts * 1000, o, h, lo, c, vol])
-        return ohlcv[-limit:]
+        dedup = {r[0]: r for r in all_rows}
+        merged = sorted(dedup.values(), key=lambda x: x[0])
+        return merged[-limit:]
+
+
+def _parse_kucoin_rows(rows: list, cap: int) -> list:
+    ohlcv = []
+    for r in reversed(rows[:cap]):
+        ts, o, c, h, lo, vol = int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])
+        ohlcv.append([ts * 1000, o, h, lo, c, vol])
+    return ohlcv
 
 
 class MexcProvider(_HttpProvider):

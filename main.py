@@ -60,6 +60,17 @@ class AAVEEqhEqlBot:
             )
             logger.info("Bot demarre — %s | %s | %s", self.market.exchange_id, symbols, tfs)
 
+            for symbol in self.config.scan.symbols:
+                for tf in self.config.scan.timeframes:
+                    df = await self.market.fetch_ohlcv(symbol, tf)
+                    if len(df) >= self.config.scan.min_bars:
+                        n = self.detector.warmup(symbol, tf, df)
+                        await self.telegram.send_raw(
+                            f"📊 Warmup <code>{symbol}</code> {tf} — "
+                            f"<code>{n}</code> zones historiques chargees (pas d'alerte retro). "
+                            f"Prochaines alertes = nouveaux EQH/EQL en live."
+                        )
+
             while True:
                 tasks = [
                     self._scan(symbol, tf)
@@ -74,11 +85,12 @@ class AAVEEqhEqlBot:
     async def _scan(self, symbol: str, timeframe: str) -> None:
         try:
             df = await self.market.fetch_ohlcv(symbol, timeframe)
-            if len(df) < self.config.scan.min_bars:
+            closed = self.market.closed_bars(df)
+            if len(closed) < self.config.scan.min_bars:
                 return
 
             closed_ts = self.market.last_closed_ts(df)
-            result = self.detector.process(symbol, timeframe, df, closed_ts)
+            result = self.detector.process(symbol, timeframe, closed, closed_ts)
 
             for zone in result.new_zones:
                 key = f"detect:{zone.dedupe_key()}"

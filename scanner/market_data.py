@@ -109,5 +109,13 @@ class MarketDataService:
             df[col] = df[col].astype(float)
         return df
 
+    @staticmethod
+    def closed_bars(df: pd.DataFrame) -> pd.DataFrame:
+        """Exclut la derniere bougie (souvent en cours de formation sur l'API)."""
+        if len(df) < 2:
+            return df
+        return df.iloc[:-1].copy()
+
     def last_closed_ts(self, df: pd.DataFrame) -> int:
-        return int(df["timestamp"].iloc[-1].timestamp())
+        closed = self.closed_bars(df)
+        return int(closed["timestamp"].iloc[-1].timestamp())
