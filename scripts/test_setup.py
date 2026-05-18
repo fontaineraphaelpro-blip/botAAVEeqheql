@@ -8,33 +8,73 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from telegram import Bot
+from telegram.error import BadRequest, Forbidden
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
 
+def _parse_chat_id(raw: str) -> int | str:
+    raw = raw.strip().strip('"').strip("'")
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+
+async def _suggest_chat_id(bot: Bot) -> None:
+    updates = await bot.get_updates(limit=20)
+    if not updates:
+        print("  1. Ouvre @AAVE_EQHEQL_bot sur Telegram")
+        print("  2. Envoie /start")
+        print("  3. Lance: python scripts/get_chat_id.py")
+        return
+    print("  Chats trouves via getUpdates :")
+    seen: set[int] = set()
+    for u in updates:
+        if u.message and u.message.chat:
+            cid = u.message.chat.id
+            if cid in seen:
+                continue
+            seen.add(cid)
+            name = u.message.chat.first_name or u.message.chat.title or "?"
+            print(f"    TELEGRAM_CHAT_ID={cid}  ({u.message.chat.type}, {name})")
+
+
 async def test_telegram() -> bool:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    chat_id_raw = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if not token:
         print("[FAIL] TELEGRAM_BOT_TOKEN manquant dans .env")
         return False
-    if not chat_id:
+    if not chat_id_raw:
         print("[FAIL] TELEGRAM_CHAT_ID manquant dans .env")
         return False
-
-    from telegram import Bot
 
     bot = Bot(token=token)
     me = await bot.get_me()
     print(f"[OK] Bot Telegram : @{me.username}")
 
-    await bot.send_message(
-        chat_id=chat_id,
-        text="Test bot AAVE EQH/EQL - connexion OK",
-    )
-    print("[OK] Message test envoye sur Telegram")
-    return True
+    chat_id = _parse_chat_id(chat_id_raw)
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text="Test bot AAVE EQH/EQL - connexion OK",
+        )
+        print("[OK] Message test envoye sur Telegram")
+        return True
+    except BadRequest as e:
+        if "chat not found" in str(e).lower():
+            print(f"[FAIL] Chat not found (ID={chat_id_raw})")
+            print("  Le bot ne peut pas ecrire a ce chat.")
+            await _suggest_chat_id(bot)
+        else:
+            print(f"[FAIL] Telegram: {e}")
+        return False
+    except Forbidden:
+        print("[FAIL] Tu as bloque le bot — debloque-le sur Telegram puis /start")
+        return False
 
 
 async def test_binance() -> bool:

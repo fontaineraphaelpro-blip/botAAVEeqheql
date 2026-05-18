@@ -1,4 +1,4 @@
-"""Récupère ton TELEGRAM_CHAT_ID après avoir envoyé un message au bot."""
+"""Recupere TELEGRAM_CHAT_ID apres /start envoye au bot."""
 
 from __future__ import annotations
 
@@ -17,24 +17,33 @@ load_dotenv(ROOT / ".env")
 async def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
-        print("Définis TELEGRAM_BOT_TOKEN dans .env")
+        print("Definis TELEGRAM_BOT_TOKEN dans .env")
         sys.exit(1)
 
     bot = Bot(token=token)
-    updates = await bot.get_updates(limit=10)
+    updates = await bot.get_updates(limit=30)
     if not updates:
-        print("Aucun message. Ouvre Telegram, envoie /start à ton bot, relance ce script.")
+        print("Aucun message trouve.")
+        print("1. Ouvre ton bot sur Telegram (@AAVE_EQHEQL_bot)")
+        print("2. Clique Demarrer ou envoie /start")
+        print("3. Relance: python scripts/get_chat_id.py")
         sys.exit(1)
 
+    seen: set[int] = set()
+    print("Copie la bonne ligne dans ton .env :\n")
     for u in reversed(updates):
-        if u.message and u.message.chat:
-            chat = u.message.chat
-            print(f"TELEGRAM_CHAT_ID={chat.id}")
-            print(f"Chat: {chat.type} | {chat.first_name or chat.title}")
-            return
+        if not u.message or not u.message.chat:
+            continue
+        chat = u.message.chat
+        if chat.id in seen:
+            continue
+        seen.add(chat.id)
+        name = chat.first_name or chat.title or "?"
+        print(f"TELEGRAM_CHAT_ID={chat.id}")
+        print(f"  -> {chat.type} | {name}\n")
 
-    print("Pas de chat trouvé dans les updates.")
-    sys.exit(1)
+    if len(seen) == 1:
+        print("(Un seul chat — utilise cet ID dans .env)")
 
 
 if __name__ == "__main__":
