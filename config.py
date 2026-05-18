@@ -12,8 +12,10 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 def _default_exchange() -> str:
-    """Bybit uniquement (Binance.com bloqué 451 sur Railway)."""
-    return os.getenv("EXCHANGE", "bybit")
+    """Railway US : KuCoin (Bybit/Binance geo-bloques). Local : Bybit."""
+    if os.getenv("EXCHANGE"):
+        return os.getenv("EXCHANGE", "bybit")
+    return "kucoin" if os.getenv("RAILWAY_ENVIRONMENT") else "bybit"
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,11 @@ class ScanConfig:
 class ExchangeConfig:
     id: str = field(default_factory=_default_exchange)
     fallback: bool = field(
-        default_factory=lambda: os.getenv("EXCHANGE_FALLBACK", "false").lower() in ("1", "true", "yes")
+        default_factory=lambda: os.getenv(
+            "EXCHANGE_FALLBACK",
+            "true" if os.getenv("RAILWAY_ENVIRONMENT") else "false",
+        ).lower()
+        in ("1", "true", "yes")
     )
     api_key: str = field(default_factory=lambda: os.getenv("EXCHANGE_API_KEY", "") or os.getenv("BINANCE_API_KEY", ""))
     api_secret: str = field(default_factory=lambda: os.getenv("EXCHANGE_API_SECRET", "") or os.getenv("BINANCE_API_SECRET", ""))

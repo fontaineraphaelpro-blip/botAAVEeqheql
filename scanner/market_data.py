@@ -1,42 +1,20 @@
-"""OHLCV via ccxt async — Bybit par défaut (AAVE/USDT)."""
+"""OHLCV AAVE/USDT — providers HTTP (Railway) ou Bybit local."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Tuple
+import os
+from typing import Dict, List, Tuple
 
-import ccxt.async_support as ccxt
 import pandas as pd
-from ccxt.base.errors import ExchangeNotAvailable
 
 from config import AppConfig
+from scanner.ohlcv_providers import RAILWAY_CHAIN, OhlcvProvider, create_provider
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
-
-# Secours optionnel : uniquement bybit (pas OKX/Binance)
-FALLBACK_CHAIN = ("bybit",)
-
-
-def _exchange_options(exchange_id: str, config: AppConfig) -> dict:
-    opts: dict = {
-        "enableRateLimit": True,
-        "options": {"defaultType": "spot"},
-    }
-    if config.exchange.api_key:
-        opts["apiKey"] = config.exchange.api_key
-        opts["secret"] = config.exchange.api_secret
-
-    if exchange_id == "binance":
-        opts["urls"] = {
-            "api": {
-                "public": "https://data-api.binance.vision/api/v3",
-                "private": "https://api.binance.com/api/v3",
-            },
-        }
-    return opts
 
 
 class MarketDataService:
@@ -44,56 +22,49 @@ class MarketDataService:
         self.config = config
         self._cache: Dict[CacheKey, pd.DataFrame] = {}
         self._locks: Dict[CacheKey, asyncio.Lock] = {}
-        self._exchange: Any = None
+        self._provider: OhlcvProvider | None = None
         self.exchange_id: str = ""
 
     async def start(self) -> None:
         primary = self.config.exchange.id.lower().strip()
         chain: List[str] = [primary]
-        if self.config.exchange.fallback:
-            for ex in FALLBACK_CHAIN:
-                if ex not in chain:
-                    chain.append(ex)
+
+        if self.config.exchange.fallback or os.getenv("RAILWAY_ENVIRONMENT"):
+            for pid in RAILWAY_CHAIN:
+                if pid not in chain:
+                    chain.append(pid)
 
         errors: List[str] = []
-        for exchange_id in chain:
-            ex = None
+        for provider_id in chain:
+            provider = None
             try:
-                ex = self._create_exchange(exchange_id)
-                await self._probe(ex)
-                self._exchange = ex
-                self.exchange_id = exchange_id
-                logger.info("Exchange connecte : %s", exchange_id)
+                provider = create_provider(provider_id)
+                symbol = self.config.scan.symbols[0]
+                tf = self.config.scan.timeframes[0]
+                await provider.fetch(symbol, tf, limit=5)
+                self._provider = provider
+                self.exchange_id = provider.name
+                logger.info("Donnees marche connectees : %s", provider.name)
                 return
             except Exception as exc:
-                errors.append(f"{exchange_id}: {exc}")
-                logger.warning("Echec connexion %s — %s", exchange_id, exc)
-                if ex is not None:
-                    await ex.close()
+                errors.append(f"{provider_id}: {exc}")
+                logger.warning("Echec %s — %s", provider_id, exc)
+                if provider is not None:
+                    await provider.close()
 
         raise RuntimeError(
-            "Bybit indisponible. Verifie EXCHANGE=bybit sur Railway. Details: " + " | ".join(errors)
+            "Aucune source OHLCV disponible depuis Railway (USA). "
+            "Bybit/Binance sont geo-bloques. Mets EXCHANGE=kucoin sur Railway. "
+            "Details: " + " | ".join(errors)
         )
 
-    def _create_exchange(self, exchange_id: str) -> Any:
-        if not hasattr(ccxt, exchange_id):
-            raise ValueError(f"Exchange inconnu: {exchange_id}")
-        cls = getattr(ccxt, exchange_id)
-        return cls(_exchange_options(exchange_id, self.config))
-
-    async def _probe(self, exchange: Any) -> None:
-        """Test OHLCV sans load_markets (evite exchangeInfo geo-bloque)."""
-        symbol = self.config.scan.symbols[0]
-        tf = self.config.scan.timeframes[0]
-        await exchange.fetch_ohlcv(symbol, timeframe=tf, limit=5)
-
     async def close(self) -> None:
-        if self._exchange:
+        if self._provider:
             try:
-                await self._exchange.close()
+                await self._provider.close()
             except Exception as exc:
-                logger.warning("Fermeture exchange: %s", exc)
-            self._exchange = None
+                logger.warning("Fermeture provider: %s", exc)
+            self._provider = None
 
     def _lock(self, key: CacheKey) -> asyncio.Lock:
         if key not in self._locks:
@@ -103,34 +74,30 @@ class MarketDataService:
     async def fetch_ohlcv(self, symbol: str, timeframe: str) -> pd.DataFrame:
         key = (symbol, timeframe)
         async with self._lock(key):
-            ex = self._exchange
-            if ex is None:
+            provider = self._provider
+            if provider is None:
                 raise RuntimeError("MarketDataService non demarre")
 
             limit = self.config.scan.ohlcv_limit
             cached = self._cache.get(key)
 
-            try:
-                if cached is None or len(cached) < self.config.scan.min_bars:
-                    raw = await ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-                    df = self._to_df(raw)
-                    self._cache[key] = df
-                    return df.copy()
+            if cached is None or len(cached) < self.config.scan.min_bars:
+                raw = await provider.fetch(symbol, timeframe, limit=limit)
+                df = self._to_df(raw)
+                self._cache[key] = df
+                return df.copy()
 
-                since_ms = int(cached["timestamp"].iloc[-2].timestamp() * 1000)
-                raw = await ex.fetch_ohlcv(symbol, timeframe=timeframe, since=since_ms, limit=50)
-                if raw:
-                    new_df = self._to_df(raw)
-                    merged = (
-                        pd.concat([cached, new_df])
-                        .drop_duplicates(subset=["timestamp"])
-                        .sort_values("timestamp")
-                    )
-                    self._cache[key] = merged.tail(limit).reset_index(drop=True)
-                return self._cache[key].copy()
-            except ExchangeNotAvailable:
-                logger.error("Exchange %s indisponible (geo-block?) — redemarrage requis", self.exchange_id)
-                raise
+            since_ms = int(cached["timestamp"].iloc[-2].timestamp() * 1000)
+            raw = await provider.fetch(symbol, timeframe, limit=50, since_ms=since_ms)
+            if raw:
+                new_df = self._to_df(raw)
+                merged = (
+                    pd.concat([cached, new_df])
+                    .drop_duplicates(subset=["timestamp"])
+                    .sort_values("timestamp")
+                )
+                self._cache[key] = merged.tail(limit).reset_index(drop=True)
+            return self._cache[key].copy()
 
     @staticmethod
     def _to_df(raw: list) -> pd.DataFrame:

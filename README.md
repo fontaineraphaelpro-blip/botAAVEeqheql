@@ -121,12 +121,12 @@ Le bot est prêt pour un **worker** Railway (processus long, pas de site web).
 | `TELEGRAM_BOT_TOKEN` | ton token BotFather |
 | `TELEGRAM_CHAT_ID` | `6381593262` (ou le tien via `get_chat_id.py`) |
 | `LOG_LEVEL` | `INFO` |
-| `EXCHANGE` | `bybit` |
-| `EXCHANGE_FALLBACK` | `false` (ne pas activer — Bybit uniquement) |
+| `EXCHANGE` | `kucoin` (**obligatoire sur Railway USA**) |
+| `EXCHANGE_FALLBACK` | `true` (essaie mexc puis binance_vision) |
 
 Ne mets **pas** de `.env` sur GitHub — uniquement dans Railway.
 
-**Erreur 451 Binance** : les serveurs Railway (USA) ne peuvent pas appeler `api.binance.com`. Utilise `EXCHANGE=bybit`.
+**Bybit sur Railway** : bloque aussi (403 CloudFront USA). Bybit fonctionne **en local** (PC France). Sur Railway utilise **KuCoin** — graphique TV : KUCOIN:AAVEUSDT.
 
 4. **Settings** → Start Command : `python main.py` (déjà dans `railway.toml`)
 5. **Deploy** — dans les logs tu dois voir `Bot démarré`
