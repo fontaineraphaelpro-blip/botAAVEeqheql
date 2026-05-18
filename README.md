@@ -121,8 +121,8 @@ Le bot est prêt pour un **worker** Railway (processus long, pas de site web).
 | `TELEGRAM_BOT_TOKEN` | ton token BotFather |
 | `TELEGRAM_CHAT_ID` | `6381593262` (ou le tien via `get_chat_id.py`) |
 | `LOG_LEVEL` | `INFO` |
-| `EXCHANGE` | `bybit` (**obligatoire sur Railway** — Binance.com est bloque 451) |
-| `EXCHANGE_FALLBACK` | `true` (essaie okx si bybit echoue) |
+| `EXCHANGE` | `bybit` |
+| `EXCHANGE_FALLBACK` | `false` (ne pas activer — Bybit uniquement) |
 
 Ne mets **pas** de `.env` sur GitHub — uniquement dans Railway.
 

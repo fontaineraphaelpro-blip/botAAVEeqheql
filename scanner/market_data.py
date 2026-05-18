@@ -1,4 +1,4 @@
-"""OHLCV via ccxt async — Binance (local) ou Bybit/OKX (Railway / zones restreintes)."""
+"""OHLCV via ccxt async — Bybit par défaut (AAVE/USDT)."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
 
-# Binance.com renvoie 451 depuis les datacenters US/EU de Railway
-FALLBACK_CHAIN = ("bybit", "okx", "binance")
+# Secours optionnel : uniquement bybit (pas OKX/Binance)
+FALLBACK_CHAIN = ("bybit",)
 
 
 def _exchange_options(exchange_id: str, config: AppConfig) -> dict:
@@ -72,8 +72,7 @@ class MarketDataService:
                     await ex.close()
 
         raise RuntimeError(
-            "Aucun exchange disponible. Binance est bloque (451) sur Railway — "
-            "definis EXCHANGE=bybit dans les variables Railway. Details: " + " | ".join(errors)
+            "Bybit indisponible. Verifie EXCHANGE=bybit sur Railway. Details: " + " | ".join(errors)
         )
 
     def _create_exchange(self, exchange_id: str) -> Any:
