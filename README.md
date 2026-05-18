@@ -71,7 +71,7 @@ bot AAVE/
 │   ├── market_data.py
 │   ├── liquidity_detector.py
 │   └── sweeps.py
-├── telegram/
+├── notifier/
 │   └── bot.py
 ├── models/
 │   ├── liquidity_zone.py

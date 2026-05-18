@@ -10,7 +10,7 @@ from config import AppConfig, get_config
 from models.liquidity_zone import LiquidityZone
 from scanner.liquidity_detector import LiquidityDetector
 from scanner.market_data import MarketDataService
-from telegram.bot import TelegramNotifier
+from notifier.bot import TelegramNotifier
 from utils.logger import setup_logger
 
 logger = setup_logger("main")
