@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Bot
-from telegram.error import BadRequest, Forbidden
+from telegram.error import BadRequest, Forbidden, InvalidToken
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
@@ -53,7 +53,14 @@ async def test_telegram() -> bool:
         return False
 
     bot = Bot(token=token)
-    me = await bot.get_me()
+    try:
+        me = await bot.get_me()
+    except InvalidToken:
+        print("[FAIL] Token invalide (Not Found)")
+        print("  Copie le NOUVEAU token depuis @BotFather dans .env local :")
+        print("  TELEGRAM_BOT_TOKEN=123456789:ABC...")
+        print("  Pas d'espaces, pas de guillemets. Ne le mets pas sur GitHub.")
+        return False
     print(f"[OK] Bot Telegram : @{me.username}")
 
     chat_id = _parse_chat_id(chat_id_raw)
