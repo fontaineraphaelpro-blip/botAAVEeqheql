@@ -24,7 +24,7 @@ class PivotConfig:
 @dataclass(frozen=True)
 class ScanConfig:
     symbols: tuple[str, ...] = ("AAVE/USDT",)
-    timeframes: tuple[str, ...] = ("1m", "5m", "15m")
+    timeframes: tuple[str, ...] = ("5m",)
     ohlcv_limit: int = 300
     poll_interval_sec: float = 5.0
     min_bars: int = 80

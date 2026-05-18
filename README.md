@@ -2,7 +2,7 @@
 
 Détection automatique des **Equal Highs (EQH)**, **Equal Lows (EQL)** et **liquidity sweeps**, reproduisant la logique de l’indicateur LuxAlgo *EQH/EQL Liquidity Zones* — sans TradingView.
 
-Optimisé pour **AAVE/USDT** en scalping sur **1m**, **5m** et **15m**.
+Optimisé pour **AAVE/USDT** en scalping sur **5m** uniquement.
 
 ## Fonctionnalités
 
