@@ -12,7 +12,7 @@ from models.liquidity_zone import LiquidityZone, PivotPoint, ZoneType
 from models.market_state import MarketState
 from scanner.sweeps import detect_sweeps
 from utils.logger import setup_logger
-from utils.pivots import ta_pivot_high, ta_pivot_low
+from utils.pivots import pivot_high_at_bar, pivot_low_at_bar
 
 logger = setup_logger(__name__)
 
@@ -22,7 +22,7 @@ StateKey = Tuple[str, str]
 @dataclass
 class ScanResult:
     new_zones: List[LiquidityZone] = field(default_factory=list)
-    sweeps: List[Tuple[LiquidityZone, str]] = field(default_factory=list)
+    sweeps: List[Tuple[LiquidityZone, str, int]] = field(default_factory=list)
 
 
 class LiquidityDetector:
@@ -49,56 +49,86 @@ class LiquidityDetector:
         *,
         record_only: bool = False,
     ) -> ScanResult:
-        """Traite uniquement les nouvelles bougies fermées (évite doublons)."""
+        """
+        Traite chaque bougie fermee non encore analysee (pas seulement la derniere).
+        Evite le retard cumule et les EQH/EQL manques.
+        """
         state = self._state(symbol, timeframe)
-        if not record_only and state.last_processed_ts == last_closed_ts:
+        min_bars = self.config.scan.min_bars
+        if len(df) < min_bars:
             return ScanResult()
 
+        merged = ScanResult()
+        start_bar = state.last_processed_bar + 1
+        end_bar = len(df) - 1
+
+        if not record_only and start_bar > end_bar:
+            if state.last_processed_ts == last_closed_ts:
+                return ScanResult()
+            start_bar = end_bar
+
+        for bar_index in range(max(start_bar, min_bars), end_bar + 1):
+            bar_result = self._process_one_bar(
+                symbol, timeframe, df, bar_index, record_only=record_only
+            )
+            merged.new_zones.extend(bar_result.new_zones)
+            merged.sweeps.extend(bar_result.sweeps)
+
         if not record_only:
+            state.last_processed_bar = end_bar
             state.last_processed_ts = last_closed_ts
 
+        return merged
+
+    def _process_one_bar(
+        self,
+        symbol: str,
+        timeframe: str,
+        df: pd.DataFrame,
+        bar_index: int,
+        *,
+        record_only: bool,
+    ) -> ScanResult:
+        state = self._state(symbol, timeframe)
         left = self.config.pivot.pivot_left
         right = self.config.pivot.pivot_right
         thr = self.config.pivot.threshold_pct
 
-        bar_index = len(df) - 1
         highs = df["high"].to_numpy()
         lows = df["low"].to_numpy()
         volumes = df["volume"].to_numpy()
 
         result = ScanResult()
 
-        p_h, pivot_hi_idx = ta_pivot_high(highs, left, right)
+        p_h, pivot_hi_idx = pivot_high_at_bar(highs, bar_index, left, right)
         if p_h is not None and pivot_hi_idx is not None:
             current_vol = float(volumes[pivot_hi_idx])
+            if not self._has_pivot(state.historical_highs, pivot_hi_idx):
+                state.historical_highs.appendleft(
+                    PivotPoint(price=p_h, bar_index=pivot_hi_idx, volume=current_vol)
+                )
             zone = self._try_eqh(symbol, timeframe, state, p_h, pivot_hi_idx, current_vol, thr, bar_index)
-            if zone:
-                if zone.dedupe_key() not in self._alerted_zones:
-                    zone.score = self._score(df, zone)
-                    result.new_zones.append(zone)
-                    if not record_only:
-                        self._alerted_zones.add(zone.dedupe_key())
+            if zone and zone.dedupe_key() not in self._alerted_zones:
+                zone.score = self._score(df, zone)
+                result.new_zones.append(zone)
+                if not record_only:
+                    self._alerted_zones.add(zone.dedupe_key())
                 state.active_zones.append(zone)
 
-            state.historical_highs.appendleft(
-                PivotPoint(price=p_h, bar_index=pivot_hi_idx, volume=current_vol)
-            )
-
-        p_l, pivot_lo_idx = ta_pivot_low(lows, left, right)
+        p_l, pivot_lo_idx = pivot_low_at_bar(lows, bar_index, left, right)
         if p_l is not None and pivot_lo_idx is not None:
             current_vol = float(volumes[pivot_lo_idx])
+            if not self._has_pivot(state.historical_lows, pivot_lo_idx):
+                state.historical_lows.appendleft(
+                    PivotPoint(price=p_l, bar_index=pivot_lo_idx, volume=current_vol)
+                )
             zone = self._try_eql(symbol, timeframe, state, p_l, pivot_lo_idx, current_vol, thr, bar_index)
-            if zone:
-                if zone.dedupe_key() not in self._alerted_zones:
-                    zone.score = self._score(df, zone)
-                    result.new_zones.append(zone)
-                    if not record_only:
-                        self._alerted_zones.add(zone.dedupe_key())
+            if zone and zone.dedupe_key() not in self._alerted_zones:
+                zone.score = self._score(df, zone)
+                result.new_zones.append(zone)
+                if not record_only:
+                    self._alerted_zones.add(zone.dedupe_key())
                 state.active_zones.append(zone)
-
-            state.historical_lows.appendleft(
-                PivotPoint(price=p_l, bar_index=pivot_lo_idx, volume=current_vol)
-            )
 
         unswept = [z for z in state.active_zones if not z.is_swept]
         result.sweeps = detect_sweeps(df, unswept, bar_index)
@@ -109,11 +139,11 @@ class LiquidityDetector:
 
         return result
 
+    @staticmethod
+    def _has_pivot(history, bar_index: int) -> bool:
+        return any(p.bar_index == bar_index for p in history)
+
     def warmup(self, symbol: str, timeframe: str, df: pd.DataFrame) -> int:
-        """
-        Rejoue l'historique bougie par bougie pour remplir les pivots
-        (sinon EQH/EQL impossibles juste apres un redeploy).
-        """
         closed = df.iloc[:-1] if len(df) > 1 else df
         min_bars = self.config.scan.min_bars
         zones_found = 0
@@ -125,9 +155,10 @@ class LiquidityDetector:
             zones_found += len(result.new_zones)
 
         state = self._state(symbol, timeframe)
-        state.last_processed_ts = None
+        state.last_processed_bar = len(closed) - 1
+        state.last_processed_ts = int(closed["timestamp"].iloc[-1].timestamp())
         logger.info(
-            "Warmup %s %s: %d barres, highs=%d lows=%d, zones historiques=%d",
+            "Warmup %s %s: %d barres, highs=%d lows=%d, zones=%d",
             symbol,
             timeframe,
             len(closed) - min_bars,
@@ -149,6 +180,8 @@ class LiquidityDetector:
         bar_index: int,
     ) -> LiquidityZone | None:
         for prev in state.historical_highs:
+            if prev.bar_index == pivot_idx:
+                continue
             diff = abs(p_h - prev.price) / prev.price * 100.0
             if diff <= thr:
                 top = max(p_h, prev.price)
@@ -184,6 +217,8 @@ class LiquidityDetector:
         bar_index: int,
     ) -> LiquidityZone | None:
         for prev in state.historical_lows:
+            if prev.bar_index == pivot_idx:
+                continue
             diff = abs(p_l - prev.price) / prev.price * 100.0
             if diff <= thr:
                 top = max(p_l, prev.price)

@@ -46,7 +46,7 @@ async def main() -> None:
         t = slice_df["timestamp"].iloc[-1]
         for z in r.new_zones:
             events.append((t, z.zone_type.value, z.sweep_level, "ZONE"))
-        for z, st in r.sweeps:
+        for z, st, _bar in r.sweeps:
             events.append((t, st, z.sweep_level, "SWEEP"))
 
     print(f"Signaux sur les {lookback} dernieres bougies 5m fermees:\n")

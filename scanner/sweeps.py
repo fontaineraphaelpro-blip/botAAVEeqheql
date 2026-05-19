@@ -13,18 +13,18 @@ def detect_sweeps(
     df: pd.DataFrame,
     zones: List[LiquidityZone],
     bar_index: int,
-) -> List[Tuple[LiquidityZone, str]]:
+) -> List[Tuple[LiquidityZone, str, int]]:
     """
     Sweep EQH: high > sweep_level (top), uniquement si bar_index > created_bar_index.
     Sweep EQL: low < sweep_level (bottom).
     """
-    if df.empty or not zones:
+    if df.empty or not zones or bar_index < 0 or bar_index >= len(df):
         return []
 
-    last = df.iloc[-1]
-    high = float(last["high"])
-    low = float(last["low"])
-    events: List[Tuple[LiquidityZone, str]] = []
+    bar = df.iloc[bar_index]
+    high = float(bar["high"])
+    low = float(bar["low"])
+    events: List[Tuple[LiquidityZone, str, int]] = []
 
     for zone in zones:
         if zone.is_swept:
@@ -34,9 +34,9 @@ def detect_sweeps(
 
         if zone.zone_type == ZoneType.EQH and high > zone.sweep_level:
             zone.is_swept = True
-            events.append((zone, "EQH_SWEEP"))
+            events.append((zone, "EQH_SWEEP", bar_index))
         elif zone.zone_type == ZoneType.EQL and low < zone.sweep_level:
             zone.is_swept = True
-            events.append((zone, "EQL_SWEEP"))
+            events.append((zone, "EQL_SWEEP", bar_index))
 
     return events

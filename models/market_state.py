@@ -14,3 +14,4 @@ class MarketState:
         self.active_zones: list[LiquidityZone] = []
         self.max_active_zones = max_active_zones
         self.last_processed_ts: int | None = None
+        self.last_processed_bar: int = -1
