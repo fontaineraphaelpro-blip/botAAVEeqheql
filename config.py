@@ -54,7 +54,7 @@ class ScanConfig:
         default_factory=lambda: _env_float("POLL_INTERVAL_SEC", 30.0)
     )
     min_fetch_interval_sec: float = field(
-        default_factory=lambda: _env_float("MIN_FETCH_INTERVAL_SEC", 25.0)
+        default_factory=lambda: _env_float("MIN_FETCH_INTERVAL_SEC", 60.0)
     )
     min_bars: int = 80
 
