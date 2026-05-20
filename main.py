@@ -7,7 +7,7 @@ import os
 
 from config import AppConfig, get_config
 from scanner.liquidity_detector import LiquidityDetector
-from scanner.market_data import MarketDataService
+from scanner.market_data import BOT_DATA_VERSION, MarketDataService
 from notifier.bot import TelegramNotifier
 from utils.logger import setup_logger
 
@@ -36,6 +36,7 @@ class AAVEEqhEqlBot:
             await self.telegram.send_raw(
                 f"✅ <b>Bot EQH/EQL démarré</b>\n"
                 f"Exchange : <code>{self.market.exchange_id}</code>\n"
+                f"Build : <code>{BOT_DATA_VERSION}</code>\n"
                 f"Pair(s) : <code>{symbols}</code>\n"
                 f"TF : <code>{tfs}</code>\n"
                 f"Pivot L/R : <code>{self.config.pivot.pivot_left}</code> / "
@@ -105,7 +106,7 @@ class AAVEEqhEqlBot:
                     logger.info("SWEEP %s %s %s @ %.4f", stype, symbol, timeframe, zone.sweep_level)
 
         except Exception as exc:
-            logger.exception("Erreur %s %s: %s", symbol, timeframe, exc)
+            logger.warning("Scan ignore %s %s: %s", symbol, timeframe, exc)
 
 
 async def main() -> None:

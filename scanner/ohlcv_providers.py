@@ -1,12 +1,12 @@
-"""OHLCV via API publiques HTTP — sans load_markets (compatible Railway US)."""
+"""OHLCV via API publiques HTTP — rate limit + fallback (Railway)."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import List, Optional
-
 import asyncio
 import logging
+import time
+from abc import ABC, abstractmethod
+from typing import Dict, List, Optional
 
 import aiohttp
 
@@ -15,6 +15,21 @@ logger = logging.getLogger(__name__)
 BINANCE_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h"}
 KUCOIN_TF = {"1m": "1min", "5m": "5min", "15m": "15min", "1h": "1hour"}
 MEXC_TF = BINANCE_TF
+
+# Limite globale KuCoin (IP Railway partagée → très strict)
+_KUCOIN_LOCK = asyncio.Lock()
+_KUCOIN_NEXT_AT = 0.0
+KUCOIN_MIN_INTERVAL_SEC = 4.0
+
+
+async def _kucoin_throttle() -> None:
+    global _KUCOIN_NEXT_AT
+    async with _KUCOIN_LOCK:
+        now = time.monotonic()
+        wait = _KUCOIN_NEXT_AT - now
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _KUCOIN_NEXT_AT = time.monotonic() + KUCOIN_MIN_INTERVAL_SEC
 
 
 def _symbol_usdt(symbol: str) -> str:
@@ -51,19 +66,28 @@ class _HttpProvider(OhlcvProvider):
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=30),
-                headers={"User-Agent": "AAVE-EQH-EQL-Bot/1.0"},
+                headers={"User-Agent": "AAVE-EQH-EQL-Bot/2.0"},
             )
         return self._session
 
-    async def _get_json(self, url: str, params: dict, *, max_retries: int = 5) -> dict:
-        session = await self._get_session()
+    async def _before_request(self) -> None:
+        if self.name == "kucoin":
+            await _kucoin_throttle()
+
+    async def _get_json(self, url: str, params: dict, *, max_retries: int = 6) -> dict:
         last_exc: Exception | None = None
         for attempt in range(max_retries):
+            await self._before_request()
+            session = await self._get_session()
             async with session.get(url, params=params) as resp:
                 if resp.status == 429:
-                    wait = min(90.0, 5.0 * (2**attempt))
+                    wait = min(120.0, 8.0 * (2**attempt))
                     logger.warning(
-                        "Rate limit 429 (%s) — retry dans %.0fs", self.name, wait
+                        "Rate limit 429 (%s) — attente %.0fs (tentative %d/%d)",
+                        self.name,
+                        wait,
+                        attempt + 1,
+                        max_retries,
                     )
                     await asyncio.sleep(wait)
                     last_exc = aiohttp.ClientResponseError(
@@ -95,15 +119,18 @@ class KucoinProvider(_HttpProvider):
         limit: int,
         since_ms: Optional[int] = None,
     ) -> List[list]:
+        del since_ms  # jamais startAt — trop de 429 sur Railway
         tf = KUCOIN_TF.get(timeframe)
         if not tf:
             raise ValueError(f"Timeframe non supporte: {timeframe}")
 
         pair = _symbol_dash(symbol)
         url = "https://api.kucoin.com/api/v1/market/candles"
+        import time as _time
 
-        if since_ms:
-            params: dict = {"type": tf, "symbol": pair, "startAt": since_ms // 1000}
+        # Une seule page pour refresh (<=150 bougies)
+        if limit <= 150:
+            params = {"type": tf, "symbol": pair, "endAt": int(_time.time())}
             body = await self._get_json(url, params)
             if body.get("code") != "200000":
                 raise RuntimeError(f"KuCoin API: {body}")
@@ -111,13 +138,14 @@ class KucoinProvider(_HttpProvider):
             ohlcv = _parse_kucoin_rows(rows, limit)
             return ohlcv[-limit:]
 
-        import time as _time
-
         all_rows: list = []
         end_at = int(_time.time())
-        while len(all_rows) < limit:
+        pages = 0
+        max_pages = 4
+        while len(all_rows) < limit and pages < max_pages:
             params = {"type": tf, "symbol": pair, "endAt": end_at}
             body = await self._get_json(url, params)
+            pages += 1
             if body.get("code") != "200000":
                 raise RuntimeError(f"KuCoin API: {body}")
             batch = body.get("data") or []
@@ -131,7 +159,7 @@ class KucoinProvider(_HttpProvider):
             end_at = oldest_ts - 1
             if len(batch) < 100:
                 break
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(1.0)
 
         dedup = {r[0]: r for r in all_rows}
         merged = sorted(dedup.values(), key=lambda x: x[0])
@@ -156,20 +184,19 @@ class MexcProvider(_HttpProvider):
         limit: int,
         since_ms: Optional[int] = None,
     ) -> List[list]:
+        del since_ms
         tf = MEXC_TF.get(timeframe)
         if not tf:
             raise ValueError(f"Timeframe non supporte: {timeframe}")
 
         url = "https://api.mexc.com/api/v3/klines"
-        params: dict = {"symbol": _symbol_usdt(symbol), "interval": tf, "limit": min(limit, 1000)}
-        if since_ms:
-            params["startTime"] = since_ms
-
-        session = await self._get_session()
-        async with session.get(url, params=params) as resp:
-            resp.raise_for_status()
-            raw = await resp.json()
-        return [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in raw]
+        params: dict = {
+            "symbol": _symbol_usdt(symbol),
+            "interval": tf,
+            "limit": min(limit, 1000),
+        }
+        body = await self._get_json(url, params)
+        return [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in body]
 
 
 class BinanceVisionProvider(_HttpProvider):
@@ -182,25 +209,22 @@ class BinanceVisionProvider(_HttpProvider):
         limit: int,
         since_ms: Optional[int] = None,
     ) -> List[list]:
+        del since_ms
         tf = BINANCE_TF.get(timeframe)
         if not tf:
             raise ValueError(f"Timeframe non supporte: {timeframe}")
 
         url = "https://data-api.binance.vision/api/v3/klines"
-        params: dict = {"symbol": _symbol_usdt(symbol), "interval": tf, "limit": min(limit, 1000)}
-        if since_ms:
-            params["startTime"] = since_ms
-
-        session = await self._get_session()
-        async with session.get(url, params=params) as resp:
-            resp.raise_for_status()
-            raw = await resp.json()
-        return [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in raw]
+        params: dict = {
+            "symbol": _symbol_usdt(symbol),
+            "interval": tf,
+            "limit": min(limit, 1000),
+        }
+        body = await self._get_json(url, params)
+        return [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in body]
 
 
 class BybitProvider(_HttpProvider):
-    """Bybit v5 klines — fonctionne en local (EU), souvent bloque sur Railway US."""
-
     name = "bybit"
 
     async def fetch(
@@ -210,6 +234,7 @@ class BybitProvider(_HttpProvider):
         limit: int,
         since_ms: Optional[int] = None,
     ) -> List[list]:
+        del since_ms
         tf_map = {"1m": "1", "5m": "5", "15m": "15", "1h": "60"}
         interval = tf_map.get(timeframe)
         if not interval:
@@ -222,13 +247,7 @@ class BybitProvider(_HttpProvider):
             "interval": interval,
             "limit": min(limit, 1000),
         }
-        if since_ms:
-            params["start"] = since_ms
-
-        session = await self._get_session()
-        async with session.get(url, params=params) as resp:
-            resp.raise_for_status()
-            body = await resp.json()
+        body = await self._get_json(url, params)
         if body.get("retCode") != 0:
             raise RuntimeError(f"Bybit API: {body}")
 
@@ -247,8 +266,8 @@ PROVIDERS = {
     "bybit": BybitProvider,
 }
 
-# Railway US : Bybit + Binance.com bloques → KuCoin / MEXC
-RAILWAY_CHAIN = ("kucoin", "mexc", "binance_vision")
+# MEXC en premier : 1 requête pour 300 bougies, pas de 429
+RAILWAY_CHAIN = ("mexc", "kucoin", "binance_vision")
 
 
 def create_provider(provider_id: str) -> OhlcvProvider:

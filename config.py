@@ -12,10 +12,12 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 def _default_exchange() -> str:
-    """Railway US : KuCoin (Bybit/Binance geo-bloques). Local : Bybit."""
+    """Railway : MEXC (1 req, pas de 429). Local : Bybit. Override via EXCHANGE."""
     if os.getenv("EXCHANGE"):
         return os.getenv("EXCHANGE", "bybit")
-    return "kucoin" if os.getenv("RAILWAY_ENVIRONMENT") else "bybit"
+    if os.getenv("RAILWAY_ENVIRONMENT"):
+        return "mexc"
+    return "bybit"
 
 
 def _env_int(name: str, default: int) -> int:
