@@ -61,6 +61,8 @@ class ScanConfig:
         default_factory=lambda: _env_float("MIN_API_GAP_SEC", 5.0)
     )
     stale_retry_max: int = field(default_factory=lambda: _env_int("STALE_RETRY_MAX", 3))
+    """Au demarrage, re-scanne les N dernieres bougies fermees et envoie les notifs manquees."""
+    catchup_bars: int = field(default_factory=lambda: _env_int("CATCHUP_BARS", 36))
     min_bars: int = 80
 
 

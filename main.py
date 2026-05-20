@@ -54,10 +54,18 @@ class AAVEEqhEqlBot:
                     df = await self.market.fetch_ohlcv(symbol, tf)
                     if len(df) >= self.config.scan.min_bars:
                         n = self.detector.warmup(symbol, tf, df)
+                        catchup = self.detector.catchup_recent(
+                            symbol, tf, df, self.config.scan.catchup_bars
+                        )
+                        sent = 0
+                        for zone in catchup.new_zones:
+                            await self.telegram.notify_zone(zone)
+                            sent += 1
                         await self.telegram.send_raw(
                             f"📊 Warmup <code>{symbol}</code> {tf} — "
-                            f"<code>{n}</code> zones en mémoire. "
-                            f"Prochaines alertes = nouveaux EQH/EQL en live."
+                            f"<code>{n}</code> zones en mémoire.\n"
+                            f"Rattrapage <code>{self.config.scan.catchup_bars}</code> barres : "
+                            f"<code>{sent}</code> alerte(s) envoyée(s)."
                         )
 
             while True:

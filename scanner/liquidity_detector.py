@@ -168,6 +168,33 @@ class LiquidityDetector:
         )
         return zones_found
 
+    def catchup_recent(
+        self,
+        symbol: str,
+        timeframe: str,
+        df: pd.DataFrame,
+        bars: int,
+    ) -> ScanResult:
+        """Rejoue les dernieres bougies en mode alerte (rattrapage apres warmup)."""
+        closed = df.iloc[:-1] if len(df) > 1 else df
+        if len(closed) < self.config.scan.min_bars:
+            return ScanResult()
+
+        state = self._state(symbol, timeframe)
+        start = max(self.config.scan.min_bars, len(closed) - bars)
+        state.last_processed_bar = start - 1
+        state.last_processed_ts = None
+        ts = int(closed["timestamp"].iloc[-1].timestamp())
+        result = self.process(symbol, timeframe, closed, ts, record_only=False)
+        logger.info(
+            "Catchup %s %s: %d barres, %d alertes",
+            symbol,
+            timeframe,
+            len(closed) - start,
+            len(result.new_zones),
+        )
+        return result
+
     def _try_eqh(
         self,
         symbol: str,
