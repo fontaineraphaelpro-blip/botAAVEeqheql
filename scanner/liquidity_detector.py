@@ -168,14 +168,15 @@ class LiquidityDetector:
         )
         return zones_found
 
-    def catchup_recent(
+    def _fill_gap(
         self,
         symbol: str,
         timeframe: str,
         df: pd.DataFrame,
+        closed_ts: int,
         bars: int,
     ) -> ScanResult:
-        """Rejoue les dernieres bougies en mode alerte (rattrapage apres warmup)."""
+        """Rejoue les bougies manquees pendant une panne API (live seulement)."""
         closed = df.iloc[:-1] if len(df) > 1 else df
         if len(closed) < self.config.scan.min_bars:
             return ScanResult()
@@ -184,15 +185,15 @@ class LiquidityDetector:
         start = max(self.config.scan.min_bars, len(closed) - bars)
         state.last_processed_bar = start - 1
         state.last_processed_ts = None
-        ts = int(closed["timestamp"].iloc[-1].timestamp())
-        result = self.process(symbol, timeframe, closed, ts, record_only=False)
-        logger.info(
-            "Catchup %s %s: %d barres, %d alertes",
-            symbol,
-            timeframe,
-            len(closed) - start,
-            len(result.new_zones),
-        )
+        result = self.process(symbol, timeframe, closed, closed_ts, record_only=False)
+        if result.new_zones:
+            logger.info(
+                "Gap fill %s %s: %d barres, %d EQH/EQL",
+                symbol,
+                timeframe,
+                len(closed) - start,
+                len(result.new_zones),
+            )
         return result
 
     def missed_candles(self, symbol: str, timeframe: str, closed_ts: int) -> int:
@@ -206,29 +207,20 @@ class LiquidityDetector:
             return 0
         return max(0, int(gap / tf_sec) - 1)
 
-    def scan(
+    def scan_live(
         self,
         symbol: str,
         timeframe: str,
         df: pd.DataFrame,
         closed_ts: int,
         *,
-        catchup_max_bars: int = 96,
+        max_gap_bars: int = 48,
     ) -> ScanResult:
-        """
-        Scan normal + rattrapage auto si trou de donnees (429, redemarrage, etc.).
-        """
+        """Scan live : bougie par bougie + comble un trou API sans louper d'alerte."""
         missed = self.missed_candles(symbol, timeframe, closed_ts)
         if missed >= 1:
-            bars = min(missed + 3, catchup_max_bars)
-            logger.info(
-                "Trou detecte %s %s: ~%d bougies — catchup %d barres",
-                symbol,
-                timeframe,
-                missed,
-                bars,
-            )
-            return self.catchup_recent(symbol, timeframe, df, bars)
+            bars = min(missed + 3, max_gap_bars)
+            return self._fill_gap(symbol, timeframe, df, closed_ts, bars)
         return self.process(symbol, timeframe, df, closed_ts, record_only=False)
 
     def _try_eqh(

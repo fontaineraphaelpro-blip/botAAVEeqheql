@@ -17,7 +17,7 @@ from utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
-BOT_DATA_VERSION = "2026-05-21-robust-v4"
+BOT_DATA_VERSION = "2026-05-21-live-v5"
 
 
 class MarketDataService:
@@ -164,59 +164,66 @@ class MarketDataService:
             cached = self._cache.get(key)
             prev_closed_ts = self._last_closed_ts.get(key)
 
-            if cached is None or len(cached) < self.config.scan.min_bars:
-                try:
+            try:
+                if cached is None or len(cached) < self.config.scan.min_bars:
                     raw, src = await self._fetch_with_fallback(symbol, timeframe, limit)
                     df = self._to_df(raw)
                     self._cache[key] = df
                     self._last_api_fetch[key] = time.monotonic()
                     self._last_closed_ts[key] = self.last_closed_ts(df)
                     self._stale_retries[key] = 0
-                    logger.info("Historique charge via %s (%d barres)", src, len(df))
+                    logger.info("Historique via %s (%d barres)", src, len(df))
                     return df.copy()
+
+                if not self._should_refresh(key, timeframe, cached):
+                    return cached.copy()
+
+                try:
+                    raw, _src = await self._fetch_with_fallback(symbol, timeframe, limit=20)
                 except Exception as exc:
-                    logger.error("Chargement initial OHLCV impossible: %s", exc)
-                    raise
+                    logger.warning("Refresh %s %s: %s — cache", symbol, timeframe, exc)
+                    return cached.copy()
 
-            if not self._should_refresh(key, timeframe, cached):
-                return cached.copy()
-
-            try:
-                raw, src = await self._fetch_with_fallback(symbol, timeframe, limit=20)
                 self._last_api_fetch[key] = time.monotonic()
-                logger.debug("Refresh %s via %s", symbol, src)
+
+                if raw:
+                    new_df = self._to_df(raw)
+                    merged = (
+                        pd.concat([cached, new_df])
+                        .drop_duplicates(subset=["timestamp"])
+                        .sort_values("timestamp")
+                    )
+                    self._cache[key] = merged.tail(limit).reset_index(drop=True)
+
+                df = self._cache[key]
+                new_closed_ts = self.last_closed_ts(df)
+                if prev_closed_ts is not None and new_closed_ts == prev_closed_ts:
+                    retries = self._stale_retries.get(key, 0) + 1
+                    self._stale_retries[key] = retries
+                    if retries >= 1:
+                        self._last_api_fetch[key] = 0.0
+                else:
+                    self._stale_retries[key] = 0
+                    self._last_closed_ts[key] = new_closed_ts
+
+                return df.copy()
             except Exception as exc:
-                logger.warning(
-                    "Refresh OHLCV echoue (%s) — cache conserve: %s", symbol, exc
-                )
-                return cached.copy()
-
-            if raw:
-                new_df = self._to_df(raw)
-                merged = (
-                    pd.concat([cached, new_df])
-                    .drop_duplicates(subset=["timestamp"])
-                    .sort_values("timestamp")
-                )
-                self._cache[key] = merged.tail(limit).reset_index(drop=True)
-
-            df = self._cache[key]
-            new_closed_ts = self.last_closed_ts(df)
-            if prev_closed_ts is not None and new_closed_ts == prev_closed_ts:
-                retries = self._stale_retries.get(key, 0) + 1
-                self._stale_retries[key] = retries
-                if retries >= 2:
-                    self._last_api_fetch[key] = 0.0
-            else:
-                self._stale_retries[key] = 0
-                self._last_closed_ts[key] = new_closed_ts
-
-            return df.copy()
+                if cached is not None and len(cached) >= self.config.scan.min_bars:
+                    logger.warning("API %s %s: %s — cache", symbol, timeframe, exc)
+                    return cached.copy()
+                raise
 
     def has_cache(self, symbol: str, timeframe: str) -> bool:
         key = (symbol, timeframe)
         cached = self._cache.get(key)
         return cached is not None and len(cached) >= self.config.scan.min_bars
+
+    def get_cached(self, symbol: str, timeframe: str) -> pd.DataFrame:
+        key = (symbol, timeframe)
+        cached = self._cache.get(key)
+        if cached is None:
+            raise RuntimeError(f"Pas de cache pour {symbol} {timeframe}")
+        return cached.copy()
 
     @staticmethod
     def _to_df(raw: list) -> pd.DataFrame:

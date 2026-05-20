@@ -1,4 +1,4 @@
-"""Bot EQH/EQL AAVE — robuste, alertes Telegram, ne s'arrête pas."""
+"""Bot EQH/EQL — alertes live uniquement, ne crash pas."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from utils.resilience import retry_async
 
 logger = setup_logger("main")
 
-RESTART_DELAY_SEC = 45
+RESTART_DELAY_SEC = 30
 
 
 def _alert_sweeps() -> bool:
@@ -30,12 +30,10 @@ class AAVEEqhEqlBot:
         self.detector = LiquidityDetector(config)
         self.telegram = TelegramNotifier(config)
 
-    async def _notify_zones(self, zones: list[LiquidityZone]) -> int:
-        sent = 0
+    async def _notify_zones(self, zones: list[LiquidityZone]) -> None:
         for zone in zones:
             try:
                 await self.telegram.notify_zone(zone)
-                sent += 1
                 logger.info(
                     "%s %s %s @ %.4f",
                     zone.zone_type.value,
@@ -44,109 +42,106 @@ class AAVEEqhEqlBot:
                     zone.sweep_level,
                 )
             except Exception as exc:
-                logger.error("Echec envoi Telegram %s: %s", zone.zone_type.value, exc)
-        return sent
+                logger.error("Telegram %s: %s", zone.zone_type.value, exc)
 
-    async def _handle_result(
-        self, symbol: str, timeframe: str, result: ScanResult
-    ) -> None:
+    async def _handle_result(self, result: ScanResult, symbol: str, timeframe: str) -> None:
         await self._notify_zones(result.new_zones)
-        if _alert_sweeps():
-            for zone, stype, _bar in result.sweeps:
-                try:
-                    await self.telegram.notify_sweep(zone, stype)
-                    logger.info(
-                        "SWEEP %s %s %s @ %.4f", stype, symbol, timeframe, zone.sweep_level
-                    )
-                except Exception as exc:
-                    logger.error("Echec sweep Telegram: %s", exc)
+        if not _alert_sweeps():
+            return
+        for zone, stype, _bar in result.sweeps:
+            try:
+                await self.telegram.notify_sweep(zone, stype)
+            except Exception as exc:
+                logger.error("Telegram sweep: %s", exc)
+
+    async def _load_history(self, symbol: str, timeframe: str) -> bool:
+        for attempt in range(12):
+            try:
+                async def _fetch(sym: str = symbol, tf: str = timeframe) -> object:
+                    return await self.market.fetch_ohlcv(sym, tf)
+
+                df = await retry_async(_fetch, attempts=3, label="history")
+                if len(df) >= self.config.scan.min_bars:
+                    self.detector.warmup(symbol, timeframe, df)
+                    return True
+            except Exception as exc:
+                logger.warning(
+                    "Chargement historique %s %s (%d/12): %s",
+                    symbol,
+                    timeframe,
+                    attempt + 1,
+                    exc,
+                )
+            await asyncio.sleep(15)
+        return False
 
     async def _bootstrap(self) -> None:
-        await retry_async(self.market.start, label="market_start")
+        await retry_async(self.market.start, attempts=6, label="market")
         await self.telegram.start()
 
-        symbols = ", ".join(self.config.scan.symbols)
-        tfs = ", ".join(self.config.scan.timeframes)
         await self.telegram.send_raw(
-            f"✅ <b>Bot EQH/EQL démarré</b>\n"
+            f"✅ <b>Bot EQH/EQL actif</b>\n"
             f"Exchange : <code>{self.market.exchange_id}</code>\n"
             f"Build : <code>{BOT_DATA_VERSION}</code>\n"
-            f"Pair(s) : <code>{symbols}</code>\n"
-            f"TF : <code>{tfs}</code>\n"
-            f"Pivot L/R : <code>{self.config.pivot.pivot_left}</code> / "
-            f"<code>{self.config.pivot.pivot_right}</code>\n"
-            f"Seuil : <code>{self.config.pivot.threshold_pct}%</code>\n"
-            f"Rattrapage : <code>{self.config.scan.catchup_bars}</code> barres\n"
-            f"Alertes : <code>EQH + EQL</code>"
+            f"Mode : <code>alertes LIVE uniquement</code>\n"
+            f"Chaque nouveau EQH/EQL → notification."
         )
 
         for symbol in self.config.scan.symbols:
             for tf in self.config.scan.timeframes:
-                async def _fetch_df(sym: str = symbol, tframe: str = tf) -> object:
-                    return await self.market.fetch_ohlcv(sym, tframe)
-
-                df = await retry_async(_fetch_df, label="warmup_fetch")
-                if len(df) < self.config.scan.min_bars:
-                    logger.warning("Pas assez de barres pour %s %s", symbol, tf)
-                    continue
-                n = self.detector.warmup(symbol, tf, df)
-                catchup = self.detector.catchup_recent(
-                    symbol, tf, df, self.config.scan.catchup_bars
-                )
-                sent = await self._notify_zones(catchup.new_zones)
-                await self.telegram.send_raw(
-                    f"📊 Warmup <code>{symbol}</code> {tf} — "
-                    f"<code>{n}</code> zones, rattrapage <code>{sent}</code> alerte(s)."
-                )
+                ok = await self._load_history(symbol, tf)
+                if not ok:
+                    logger.error("Historique indisponible %s %s — retry en boucle", symbol, tf)
 
     async def _scan(self, symbol: str, timeframe: str) -> None:
-        df = await self.market.fetch_ohlcv(symbol, timeframe)
+        try:
+            df = await self.market.fetch_ohlcv(symbol, timeframe)
+        except Exception as exc:
+            logger.warning("Fetch %s %s: %s — cache", symbol, timeframe, exc)
+            if not self.market.has_cache(symbol, timeframe):
+                return
+            df = self.market.get_cached(symbol, timeframe)
+
         closed = self.market.closed_bars(df)
         if len(closed) < self.config.scan.min_bars:
             return
 
         closed_ts = self.market.last_closed_ts(df)
-        result = self.detector.scan(
-            symbol,
-            timeframe,
-            closed,
-            closed_ts,
-            catchup_max_bars=self.config.scan.catchup_max_bars,
+        result = self.detector.scan_live(
+            symbol, timeframe, closed, closed_ts,
+            max_gap_bars=self.config.scan.gap_fill_max_bars,
         )
-        await self._handle_result(symbol, timeframe, result)
+        await self._handle_result(result, symbol, timeframe)
 
     async def _run_loop(self) -> None:
         while True:
-            delays = [
-                self.market.seconds_until_refresh(symbol, tf)
-                for symbol in self.config.scan.symbols
-                for tf in self.config.scan.timeframes
-            ]
-            wait = min(delays) if delays else 5.0
-            if wait > 0.5:
-                await asyncio.sleep(wait)
+            try:
+                delays = [
+                    self.market.seconds_until_refresh(s, t)
+                    for s in self.config.scan.symbols
+                    for t in self.config.scan.timeframes
+                ]
+                wait = min(delays) if delays else 10.0
+                if wait > 0.5:
+                    await asyncio.sleep(wait)
 
-            for symbol in self.config.scan.symbols:
-                for tf in self.config.scan.timeframes:
-                    try:
+                for symbol in self.config.scan.symbols:
+                    for tf in self.config.scan.timeframes:
                         await self._scan(symbol, tf)
-                    except Exception as exc:
-                        logger.error("Scan %s %s: %s", symbol, tf, exc)
+            except Exception as exc:
+                logger.error("Boucle scan: %s", exc)
+                await asyncio.sleep(5)
 
     async def run(self) -> None:
         await self._bootstrap()
-        logger.info(
-            "Bot actif — %s | %s",
-            self.market.exchange_id,
-            ", ".join(self.config.scan.symbols),
-        )
+        logger.info("Live scan — %s", self.market.exchange_id)
         await self._run_loop()
 
     async def shutdown(self) -> None:
         try:
             await self.market.close()
-        except Exception as exc:
-            logger.warning("Fermeture market: %s", exc)
+        except Exception:
+            pass
 
 
 async def main() -> None:
@@ -160,17 +155,10 @@ async def main() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.error("Crash bot — redemarrage dans %ds: %s", RESTART_DELAY_SEC, exc)
+            logger.error("Redemarrage dans %ds: %s", RESTART_DELAY_SEC, exc)
             logger.debug(traceback.format_exc())
             try:
                 await bot.shutdown()
-            except Exception:
-                pass
-            try:
-                await bot.telegram.send_raw(
-                    f"⚠️ <b>Bot redémarre</b>\nErreur : <code>{exc}</code>\n"
-                    f"Relance dans {RESTART_DELAY_SEC}s…"
-                )
             except Exception:
                 pass
             await asyncio.sleep(RESTART_DELAY_SEC)
