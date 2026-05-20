@@ -266,8 +266,8 @@ PROVIDERS = {
     "bybit": BybitProvider,
 }
 
-# MEXC en premier : 1 requête pour 300 bougies, pas de 429
-RAILWAY_CHAIN = ("mexc", "kucoin", "binance_vision")
+# KuCoin = TradingView ; fallback si 429
+RAILWAY_CHAIN = ("kucoin", "binance_vision", "mexc")
 
 
 def create_provider(provider_id: str) -> OhlcvProvider:

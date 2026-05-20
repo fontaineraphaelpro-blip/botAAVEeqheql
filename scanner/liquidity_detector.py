@@ -7,7 +7,7 @@ from typing import Dict, List, Set, Tuple
 
 import pandas as pd
 
-from config import AppConfig
+from config import AppConfig, TF_SECONDS
 from models.liquidity_zone import LiquidityZone, PivotPoint, ZoneType
 from models.market_state import MarketState
 from scanner.sweeps import detect_sweeps
@@ -65,7 +65,7 @@ class LiquidityDetector:
         if not record_only and start_bar > end_bar:
             if state.last_processed_ts == last_closed_ts:
                 return ScanResult()
-            start_bar = end_bar
+            start_bar = max(min_bars, end_bar)
 
         for bar_index in range(max(start_bar, min_bars), end_bar + 1):
             bar_result = self._process_one_bar(
@@ -194,6 +194,42 @@ class LiquidityDetector:
             len(result.new_zones),
         )
         return result
+
+    def missed_candles(self, symbol: str, timeframe: str, closed_ts: int) -> int:
+        """Nombre de bougies 5m probablement sautees depuis le dernier scan."""
+        state = self._state(symbol, timeframe)
+        if state.last_processed_ts is None:
+            return 0
+        tf_sec = TF_SECONDS.get(timeframe, 300)
+        gap = closed_ts - state.last_processed_ts
+        if gap <= tf_sec:
+            return 0
+        return max(0, int(gap / tf_sec) - 1)
+
+    def scan(
+        self,
+        symbol: str,
+        timeframe: str,
+        df: pd.DataFrame,
+        closed_ts: int,
+        *,
+        catchup_max_bars: int = 96,
+    ) -> ScanResult:
+        """
+        Scan normal + rattrapage auto si trou de donnees (429, redemarrage, etc.).
+        """
+        missed = self.missed_candles(symbol, timeframe, closed_ts)
+        if missed >= 1:
+            bars = min(missed + 3, catchup_max_bars)
+            logger.info(
+                "Trou detecte %s %s: ~%d bougies — catchup %d barres",
+                symbol,
+                timeframe,
+                missed,
+                bars,
+            )
+            return self.catchup_recent(symbol, timeframe, df, bars)
+        return self.process(symbol, timeframe, df, closed_ts, record_only=False)
 
     def _try_eqh(
         self,

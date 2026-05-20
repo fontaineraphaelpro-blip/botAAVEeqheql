@@ -11,6 +11,7 @@ from telegram.constants import ParseMode
 from config import AppConfig
 from models.liquidity_zone import LiquidityZone, ZoneType
 from utils.logger import setup_logger
+from utils.resilience import retry_async
 from utils.trade_bias import get_bias
 
 logger = setup_logger(__name__)
@@ -48,12 +49,16 @@ class TelegramNotifier:
             raise ValueError(
                 "TELEGRAM_CHAT_ID manquant — envoie /start au bot puis lance: python scripts/get_chat_id.py"
             )
-        await self._bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
+
+        async def _send() -> None:
+            await self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+
+        await retry_async(_send, label="telegram_send")
 
     def _bias_block(self, zone: LiquidityZone, *, is_sweep: bool) -> str:
         bias = get_bias(zone, is_sweep=is_sweep)

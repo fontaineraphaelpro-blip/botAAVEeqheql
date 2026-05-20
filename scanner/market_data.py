@@ -17,7 +17,7 @@ from utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
-BOT_DATA_VERSION = "2026-05-20-mexc-fallback-v3"
+BOT_DATA_VERSION = "2026-05-21-robust-v4"
 
 
 class MarketDataService:
@@ -205,11 +205,18 @@ class MarketDataService:
             if prev_closed_ts is not None and new_closed_ts == prev_closed_ts:
                 retries = self._stale_retries.get(key, 0) + 1
                 self._stale_retries[key] = retries
+                if retries >= 2:
+                    self._last_api_fetch[key] = 0.0
             else:
                 self._stale_retries[key] = 0
                 self._last_closed_ts[key] = new_closed_ts
 
             return df.copy()
+
+    def has_cache(self, symbol: str, timeframe: str) -> bool:
+        key = (symbol, timeframe)
+        cached = self._cache.get(key)
+        return cached is not None and len(cached) >= self.config.scan.min_bars
 
     @staticmethod
     def _to_df(raw: list) -> pd.DataFrame:

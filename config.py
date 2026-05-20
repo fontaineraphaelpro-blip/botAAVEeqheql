@@ -16,7 +16,7 @@ def _default_exchange() -> str:
     if os.getenv("EXCHANGE"):
         return os.getenv("EXCHANGE", "bybit")
     if os.getenv("RAILWAY_ENVIRONMENT"):
-        return "mexc"
+        return "kucoin"
     return "bybit"
 
 
@@ -62,7 +62,8 @@ class ScanConfig:
     )
     stale_retry_max: int = field(default_factory=lambda: _env_int("STALE_RETRY_MAX", 3))
     """Au demarrage, re-scanne les N dernieres bougies fermees et envoie les notifs manquees."""
-    catchup_bars: int = field(default_factory=lambda: _env_int("CATCHUP_BARS", 36))
+    catchup_bars: int = field(default_factory=lambda: _env_int("CATCHUP_BARS", 48))
+    catchup_max_bars: int = field(default_factory=lambda: _env_int("CATCHUP_MAX_BARS", 96))
     min_bars: int = 80
 
 
