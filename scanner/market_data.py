@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import Dict, List, Tuple
 
 import pandas as pd
 
-from config import AppConfig
+from config import AppConfig, TF_SECONDS
 from scanner.ohlcv_providers import RAILWAY_CHAIN, OhlcvProvider, create_provider
 from utils.logger import setup_logger
 
@@ -22,6 +23,7 @@ class MarketDataService:
         self.config = config
         self._cache: Dict[CacheKey, pd.DataFrame] = {}
         self._locks: Dict[CacheKey, asyncio.Lock] = {}
+        self._last_api_fetch: Dict[CacheKey, float] = {}
         self._provider: OhlcvProvider | None = None
         self.exchange_id: str = ""
 
@@ -71,6 +73,20 @@ class MarketDataService:
             self._locks[key] = asyncio.Lock()
         return self._locks[key]
 
+    def _should_refresh(self, key: CacheKey, timeframe: str, cached: pd.DataFrame) -> bool:
+        min_gap = self.config.scan.min_fetch_interval_sec
+        last_fetch = self._last_api_fetch.get(key, 0.0)
+        if time.monotonic() - last_fetch < min_gap:
+            return False
+
+        if len(cached) < 2:
+            return True
+
+        last_closed = cached["timestamp"].iloc[-2]
+        tf_sec = TF_SECONDS.get(timeframe, 300)
+        elapsed = (pd.Timestamp.now(tz="UTC") - last_closed).total_seconds()
+        return elapsed >= tf_sec - 10
+
     async def fetch_ohlcv(self, symbol: str, timeframe: str) -> pd.DataFrame:
         key = (symbol, timeframe)
         async with self._lock(key):
@@ -85,10 +101,21 @@ class MarketDataService:
                 raw = await provider.fetch(symbol, timeframe, limit=limit)
                 df = self._to_df(raw)
                 self._cache[key] = df
+                self._last_api_fetch[key] = time.monotonic()
                 return df.copy()
 
-            since_ms = int(cached["timestamp"].iloc[-2].timestamp() * 1000)
-            raw = await provider.fetch(symbol, timeframe, limit=50, since_ms=since_ms)
+            if not self._should_refresh(key, timeframe, cached):
+                return cached.copy()
+
+            try:
+                raw = await provider.fetch(symbol, timeframe, limit=20)
+                self._last_api_fetch[key] = time.monotonic()
+            except Exception as exc:
+                logger.warning(
+                    "Refresh OHLCV echoue (%s) — cache utilise: %s", symbol, exc
+                )
+                return cached.copy()
+
             if raw:
                 new_df = self._to_df(raw)
                 merged = (

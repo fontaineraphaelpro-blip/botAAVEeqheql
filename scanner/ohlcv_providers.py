@@ -6,7 +6,11 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 
 import asyncio
+import logging
+
 import aiohttp
+
+logger = logging.getLogger(__name__)
 
 BINANCE_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h"}
 KUCOIN_TF = {"1m": "1min", "5m": "5min", "15m": "15min", "1h": "1hour"}
@@ -51,6 +55,30 @@ class _HttpProvider(OhlcvProvider):
             )
         return self._session
 
+    async def _get_json(self, url: str, params: dict, *, max_retries: int = 5) -> dict:
+        session = await self._get_session()
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            async with session.get(url, params=params) as resp:
+                if resp.status == 429:
+                    wait = min(90.0, 5.0 * (2**attempt))
+                    logger.warning(
+                        "Rate limit 429 (%s) — retry dans %.0fs", self.name, wait
+                    )
+                    await asyncio.sleep(wait)
+                    last_exc = aiohttp.ClientResponseError(
+                        resp.request_info,
+                        resp.history,
+                        status=429,
+                        message="Too Many Requests",
+                    )
+                    continue
+                resp.raise_for_status()
+                return await resp.json()
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("HTTP request failed")
+
     async def close(self) -> None:
         if self._session and not self._session.closed:
             await self._session.close()
@@ -76,10 +104,7 @@ class KucoinProvider(_HttpProvider):
 
         if since_ms:
             params: dict = {"type": tf, "symbol": pair, "startAt": since_ms // 1000}
-            session = await self._get_session()
-            async with session.get(url, params=params) as resp:
-                resp.raise_for_status()
-                body = await resp.json()
+            body = await self._get_json(url, params)
             if body.get("code") != "200000":
                 raise RuntimeError(f"KuCoin API: {body}")
             rows = body.get("data") or []
@@ -90,12 +115,9 @@ class KucoinProvider(_HttpProvider):
 
         all_rows: list = []
         end_at = int(_time.time())
-        session = await self._get_session()
         while len(all_rows) < limit:
             params = {"type": tf, "symbol": pair, "endAt": end_at}
-            async with session.get(url, params=params) as resp:
-                resp.raise_for_status()
-                body = await resp.json()
+            body = await self._get_json(url, params)
             if body.get("code") != "200000":
                 raise RuntimeError(f"KuCoin API: {body}")
             batch = body.get("data") or []
@@ -109,7 +131,7 @@ class KucoinProvider(_HttpProvider):
             end_at = oldest_ts - 1
             if len(batch) < 100:
                 break
-            await asyncio.sleep(0.12)
+            await asyncio.sleep(0.25)
 
         dedup = {r[0]: r for r in all_rows}
         merged = sorted(dedup.values(), key=lambda x: x[0])

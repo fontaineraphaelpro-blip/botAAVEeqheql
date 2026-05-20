@@ -42,12 +42,20 @@ class PivotConfig:
     max_active_zones: int = 60
 
 
+TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}
+
+
 @dataclass(frozen=True)
 class ScanConfig:
     symbols: tuple[str, ...] = ("AAVE/USDT",)
     timeframes: tuple[str, ...] = ("5m",)
     ohlcv_limit: int = 300
-    poll_interval_sec: float = 5.0
+    poll_interval_sec: float = field(
+        default_factory=lambda: _env_float("POLL_INTERVAL_SEC", 30.0)
+    )
+    min_fetch_interval_sec: float = field(
+        default_factory=lambda: _env_float("MIN_FETCH_INTERVAL_SEC", 25.0)
+    )
     min_bars: int = 80
 
 
