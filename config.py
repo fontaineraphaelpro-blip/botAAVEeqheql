@@ -50,12 +50,15 @@ class ScanConfig:
     symbols: tuple[str, ...] = ("AAVE/USDT",)
     timeframes: tuple[str, ...] = ("5m",)
     ohlcv_limit: int = 300
-    poll_interval_sec: float = field(
-        default_factory=lambda: _env_float("POLL_INTERVAL_SEC", 30.0)
+    """Secondes après clôture 5m avant requête KuCoin (donnée dispo côté exchange)."""
+    candle_close_buffer_sec: float = field(
+        default_factory=lambda: _env_float("CANDLE_CLOSE_BUFFER_SEC", 10.0)
     )
-    min_fetch_interval_sec: float = field(
-        default_factory=lambda: _env_float("MIN_FETCH_INTERVAL_SEC", 60.0)
+    """Délai minimum entre deux appels API (anti-429, sans bloquer le timing bougie)."""
+    min_api_gap_sec: float = field(
+        default_factory=lambda: _env_float("MIN_API_GAP_SEC", 5.0)
     )
+    stale_retry_max: int = field(default_factory=lambda: _env_int("STALE_RETRY_MAX", 3))
     min_bars: int = 80
 
 

@@ -1,4 +1,4 @@
-"""OHLCV AAVE/USDT — providers HTTP (Railway) ou Bybit local."""
+"""OHLCV AAVE/USDT — requêtes alignées sur la clôture des bougies."""
 
 from __future__ import annotations
 
@@ -24,6 +24,8 @@ class MarketDataService:
         self._cache: Dict[CacheKey, pd.DataFrame] = {}
         self._locks: Dict[CacheKey, asyncio.Lock] = {}
         self._last_api_fetch: Dict[CacheKey, float] = {}
+        self._last_closed_ts: Dict[CacheKey, int] = {}
+        self._stale_retries: Dict[CacheKey, int] = {}
         self._provider: OhlcvProvider | None = None
         self.exchange_id: str = ""
 
@@ -73,19 +75,53 @@ class MarketDataService:
             self._locks[key] = asyncio.Lock()
         return self._locks[key]
 
+    def _last_closed_timestamp(self, cached: pd.DataFrame) -> pd.Timestamp:
+        if len(cached) < 2:
+            return cached["timestamp"].iloc[-1]
+        return cached["timestamp"].iloc[-2]
+
+    def next_refresh_at(self, symbol: str, timeframe: str) -> pd.Timestamp | None:
+        """Heure UTC à laquelle on doit refetch (clôture bougie + buffer)."""
+        key = (symbol, timeframe)
+        cached = self._cache.get(key)
+        if cached is None or len(cached) < 2:
+            return None
+
+        tf_sec = TF_SECONDS.get(timeframe, 300)
+        buffer = self.config.scan.candle_close_buffer_sec
+        last_closed = self._last_closed_timestamp(cached)
+        return last_closed + pd.Timedelta(seconds=tf_sec + buffer)
+
+    def seconds_until_refresh(self, symbol: str, timeframe: str) -> float:
+        """Secondes avant la prochaine requête API (0 = maintenant)."""
+        nxt = self.next_refresh_at(symbol, timeframe)
+        if nxt is None:
+            return 0.0
+
+        key = (symbol, timeframe)
+        retries = self._stale_retries.get(key, 0)
+        if retries > 0:
+            return min(15.0, 5.0 * retries)
+
+        delay = (nxt - pd.Timestamp.now(tz="UTC")).total_seconds()
+        return max(0.0, delay)
+
     def _should_refresh(self, key: CacheKey, timeframe: str, cached: pd.DataFrame) -> bool:
-        min_gap = self.config.scan.min_fetch_interval_sec
-        last_fetch = self._last_api_fetch.get(key, 0.0)
-        if time.monotonic() - last_fetch < min_gap:
+        min_gap = self.config.scan.min_api_gap_sec
+        if time.monotonic() - self._last_api_fetch.get(key, 0.0) < min_gap:
             return False
 
         if len(cached) < 2:
             return True
 
-        last_closed = cached["timestamp"].iloc[-2]
-        tf_sec = TF_SECONDS.get(timeframe, 300)
-        elapsed = (pd.Timestamp.now(tz="UTC") - last_closed).total_seconds()
-        return elapsed >= tf_sec - 10
+        nxt = self.next_refresh_at(key[0], key[1])
+        if nxt is None:
+            return True
+
+        if pd.Timestamp.now(tz="UTC") < nxt:
+            return False
+
+        return True
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str) -> pd.DataFrame:
         key = (symbol, timeframe)
@@ -96,12 +132,15 @@ class MarketDataService:
 
             limit = self.config.scan.ohlcv_limit
             cached = self._cache.get(key)
+            prev_closed_ts = self._last_closed_ts.get(key)
 
             if cached is None or len(cached) < self.config.scan.min_bars:
                 raw = await provider.fetch(symbol, timeframe, limit=limit)
                 df = self._to_df(raw)
                 self._cache[key] = df
                 self._last_api_fetch[key] = time.monotonic()
+                self._last_closed_ts[key] = self.last_closed_ts(df)
+                self._stale_retries[key] = 0
                 return df.copy()
 
             if not self._should_refresh(key, timeframe, cached):
@@ -124,7 +163,24 @@ class MarketDataService:
                     .sort_values("timestamp")
                 )
                 self._cache[key] = merged.tail(limit).reset_index(drop=True)
-            return self._cache[key].copy()
+
+            df = self._cache[key]
+            new_closed_ts = self.last_closed_ts(df)
+            if prev_closed_ts is not None and new_closed_ts == prev_closed_ts:
+                retries = self._stale_retries.get(key, 0) + 1
+                self._stale_retries[key] = retries
+                if retries <= self.config.scan.stale_retry_max:
+                    logger.debug(
+                        "Pas de nouvelle bougie fermee (%s) — retry %d/%d",
+                        symbol,
+                        retries,
+                        self.config.scan.stale_retry_max,
+                    )
+            else:
+                self._stale_retries[key] = 0
+                self._last_closed_ts[key] = new_closed_ts
+
+            return df.copy()
 
     @staticmethod
     def _to_df(raw: list) -> pd.DataFrame:

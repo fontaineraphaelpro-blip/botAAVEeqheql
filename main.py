@@ -41,6 +41,8 @@ class AAVEEqhEqlBot:
                 f"Pivot L/R : <code>{self.config.pivot.pivot_left}</code> / "
                 f"<code>{self.config.pivot.pivot_right}</code>\n"
                 f"Seuil : <code>{self.config.pivot.threshold_pct}%</code>\n"
+                f"Timing : <code>aligné clôture {self.config.scan.timeframes[0]} "
+                f"(+{self.config.scan.candle_close_buffer_sec:.0f}s)</code>\n"
                 f"Alertes : <code>EQH + EQL à la détection</code>"
                 + (f" + sweeps" if sweeps else "")
             )
@@ -58,13 +60,22 @@ class AAVEEqhEqlBot:
                         )
 
             while True:
+                delays = [
+                    self.market.seconds_until_refresh(symbol, tf)
+                    for symbol in self.config.scan.symbols
+                    for tf in self.config.scan.timeframes
+                ]
+                wait = min(delays) if delays else 5.0
+                if wait > 0.5:
+                    logger.debug("Prochain scan dans %.1fs", wait)
+                    await asyncio.sleep(wait)
+
                 tasks = [
                     self._scan(symbol, tf)
                     for symbol in self.config.scan.symbols
                     for tf in self.config.scan.timeframes
                 ]
                 await asyncio.gather(*tasks, return_exceptions=True)
-                await asyncio.sleep(self.config.scan.poll_interval_sec)
         finally:
             await self.market.close()
 
