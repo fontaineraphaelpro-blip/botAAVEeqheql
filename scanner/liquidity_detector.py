@@ -237,6 +237,8 @@ class LiquidityDetector:
         for prev in state.historical_highs:
             if prev.bar_index == pivot_idx:
                 continue
+            if prev.price <= 0:
+                continue
             diff = abs(p_h - prev.price) / prev.price * 100.0
             if diff <= thr:
                 top = max(p_h, prev.price)
@@ -273,6 +275,8 @@ class LiquidityDetector:
     ) -> LiquidityZone | None:
         for prev in state.historical_lows:
             if prev.bar_index == pivot_idx:
+                continue
+            if prev.price <= 0:
                 continue
             diff = abs(p_l - prev.price) / prev.price * 100.0
             if diff <= thr:

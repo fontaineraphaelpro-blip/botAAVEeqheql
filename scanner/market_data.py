@@ -17,7 +17,7 @@ from utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
-BOT_DATA_VERSION = "2026-05-21-live-v6"
+BOT_DATA_VERSION = "2026-05-21-stable-v7"
 
 
 class MarketDataService:
@@ -73,18 +73,27 @@ class MarketDataService:
             self._providers[provider_id] = create_provider(provider_id)
         return self._providers[provider_id]
 
+    def _provider_chain_for(self, limit: int) -> List[str]:
+        chain = list(self._provider_chain)
+        if self._provider and self._provider.name not in chain:
+            chain.insert(0, self._provider.name)
+        if limit >= 200 and "binance_vision" in chain:
+            chain = ["binance_vision"] + [p for p in chain if p != "binance_vision"]
+        return chain
+
     async def _fetch_with_fallback(
         self, symbol: str, timeframe: str, limit: int
     ) -> Tuple[list, str]:
         errors: List[str] = []
-        chain = list(self._provider_chain)
-        if self._provider and self._provider.name not in chain:
-            chain.insert(0, self._provider.name)
+        chain = self._provider_chain_for(limit)
 
         for provider_id in chain:
             provider = self._get_provider(provider_id)
             try:
                 raw = await provider.fetch(symbol, timeframe, limit=limit)
+                if not raw:
+                    errors.append(f"{provider_id}: empty")
+                    continue
                 self._provider = provider
                 self.exchange_id = provider.name
                 return raw, provider.name
@@ -227,6 +236,8 @@ class MarketDataService:
 
     @staticmethod
     def _to_df(raw: list) -> pd.DataFrame:
+        if not raw:
+            raise ValueError("OHLCV vide")
         df = pd.DataFrame(
             raw, columns=["timestamp", "open", "high", "low", "close", "volume"]
         )
@@ -243,4 +254,6 @@ class MarketDataService:
 
     def last_closed_ts(self, df: pd.DataFrame) -> int:
         closed = self.closed_bars(df)
+        if closed.empty:
+            raise ValueError("Aucune bougie fermee")
         return int(closed["timestamp"].iloc[-1].timestamp())

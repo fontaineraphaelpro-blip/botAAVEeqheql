@@ -1,9 +1,8 @@
-"""Bot EQH/EQL — alertes live uniquement, ne crash pas."""
+"""Bot EQH/EQL — alertes live, boucle infinie anti-crash."""
 
 from __future__ import annotations
 
 import asyncio
-import os
 import traceback
 
 from config import AppConfig, get_config
@@ -20,6 +19,8 @@ RESTART_DELAY_SEC = 30
 
 
 def _alert_sweeps() -> bool:
+    import os
+
     return os.getenv("ALERT_SWEEPS", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -30,6 +31,19 @@ class AAVEEqhEqlBot:
         self.detector = LiquidityDetector(config)
         self.telegram = TelegramNotifier(config)
         self._warmup_info: tuple[int, float, int] | None = None
+
+    def _history_ready(self) -> bool:
+        return all(
+            self.market.has_cache(s, t)
+            for s in self.config.scan.symbols
+            for t in self.config.scan.timeframes
+        )
+
+    async def _safe_telegram(self, text: str) -> None:
+        try:
+            await self.telegram.send_raw(text)
+        except Exception as exc:
+            logger.error("Telegram: %s", exc)
 
     async def _notify_zones(self, zones: list[LiquidityZone]) -> None:
         for zone in zones:
@@ -46,14 +60,17 @@ class AAVEEqhEqlBot:
                 logger.error("Telegram %s: %s", zone.zone_type.value, exc)
 
     async def _handle_result(self, result: ScanResult, symbol: str, timeframe: str) -> None:
-        await self._notify_zones(result.new_zones)
-        if not _alert_sweeps():
-            return
-        for zone, stype, _bar in result.sweeps:
-            try:
-                await self.telegram.notify_sweep(zone, stype)
-            except Exception as exc:
-                logger.error("Telegram sweep: %s", exc)
+        try:
+            await self._notify_zones(result.new_zones)
+            if not _alert_sweeps():
+                return
+            for zone, stype, _bar in result.sweeps:
+                try:
+                    await self.telegram.notify_sweep(zone, stype)
+                except Exception as exc:
+                    logger.error("Telegram sweep: %s", exc)
+        except Exception as exc:
+            logger.error("Handle result %s %s: %s", symbol, timeframe, exc)
 
     async def _load_history(self, symbol: str, timeframe: str) -> bool:
         for attempt in range(12):
@@ -70,25 +87,30 @@ class AAVEEqhEqlBot:
                     return True
             except Exception as exc:
                 logger.warning(
-                    "Chargement historique %s %s (%d/12): %s",
-                    symbol,
-                    timeframe,
-                    attempt + 1,
-                    exc,
+                    "Historique %s %s (%d/12): %s", symbol, timeframe, attempt + 1, exc
                 )
             await asyncio.sleep(15)
         return False
 
-    async def _bootstrap(self) -> None:
-        await retry_async(self.market.start, attempts=6, label="market")
-        await self.telegram.start()
+    async def _ensure_history(self) -> None:
+        while not self._history_ready():
+            for symbol in self.config.scan.symbols:
+                for tf in self.config.scan.timeframes:
+                    if not self.market.has_cache(symbol, tf):
+                        await self._load_history(symbol, tf)
+            if not self._history_ready():
+                logger.warning("Historique indisponible — retry 30s")
+                await asyncio.sleep(30)
 
-        await self.telegram.send_raw(
+    async def _bootstrap(self) -> None:
+        await retry_async(self.market.start, attempts=8, label="market")
+        await retry_async(self.telegram.start, attempts=4, label="telegram")
+
+        await self._safe_telegram(
             f"✅ <b>Bot EQH/EQL actif</b>\n"
             f"Exchange : <code>{self.market.exchange_id}</code>\n"
             f"Build : <code>{BOT_DATA_VERSION}</code>\n"
-            f"Mode : <code>alertes LIVE uniquement</code>\n"
-            f"Chaque nouveau EQH/EQL → notification."
+            f"Mode : <code>alertes LIVE</code>"
         )
 
         for symbol in self.config.scan.symbols:
@@ -96,38 +118,47 @@ class AAVEEqhEqlBot:
                 ok = await self._load_history(symbol, tf)
                 if ok and self._warmup_info:
                     bars, hours, zones = self._warmup_info
-                    await self.telegram.send_raw(
-                        f"📊 Historique <code>{symbol}</code> {tf}\n"
-                        f"<code>{bars}</code> bougies 5m (~<code>{hours:.0f}h</code>) — "
-                        f"<code>{zones}</code> zones en mémoire.\n"
-                        f"Alertes = nouveaux EQH/EQL seulement."
+                    await self._safe_telegram(
+                        f"📊 <code>{symbol}</code> {tf} — "
+                        f"<code>{bars}</code> bougies (~<code>{hours:.0f}h</code>), "
+                        f"<code>{zones}</code> zones. Alertes live actives."
                     )
-                elif not ok:
-                    logger.error("Historique indisponible %s %s — retry en boucle", symbol, tf)
+
+        await self._ensure_history()
 
     async def _scan(self, symbol: str, timeframe: str) -> None:
         try:
-            df = await self.market.fetch_ohlcv(symbol, timeframe)
-        except Exception as exc:
-            logger.warning("Fetch %s %s: %s — cache", symbol, timeframe, exc)
-            if not self.market.has_cache(symbol, timeframe):
+            try:
+                df = await self.market.fetch_ohlcv(symbol, timeframe)
+            except Exception as exc:
+                logger.warning("Fetch %s %s: %s", symbol, timeframe, exc)
+                if not self.market.has_cache(symbol, timeframe):
+                    return
+                df = self.market.get_cached(symbol, timeframe)
+
+            closed = self.market.closed_bars(df)
+            if len(closed) < self.config.scan.min_bars:
                 return
-            df = self.market.get_cached(symbol, timeframe)
 
-        closed = self.market.closed_bars(df)
-        if len(closed) < self.config.scan.min_bars:
-            return
-
-        closed_ts = self.market.last_closed_ts(df)
-        result = self.detector.scan_live(
-            symbol, timeframe, closed, closed_ts,
-            max_gap_bars=self.config.scan.gap_fill_max_bars,
-        )
-        await self._handle_result(result, symbol, timeframe)
+            closed_ts = self.market.last_closed_ts(df)
+            result = self.detector.scan_live(
+                symbol,
+                timeframe,
+                closed,
+                closed_ts,
+                max_gap_bars=self.config.scan.gap_fill_max_bars,
+            )
+            await self._handle_result(result, symbol, timeframe)
+        except Exception as exc:
+            logger.error("Scan %s %s: %s", symbol, timeframe, exc)
+            logger.debug(traceback.format_exc())
 
     async def _run_loop(self) -> None:
         while True:
             try:
+                if not self._history_ready():
+                    await self._ensure_history()
+
                 delays = [
                     self.market.seconds_until_refresh(s, t)
                     for s in self.config.scan.symbols
@@ -141,7 +172,7 @@ class AAVEEqhEqlBot:
                     for tf in self.config.scan.timeframes:
                         await self._scan(symbol, tf)
             except Exception as exc:
-                logger.error("Boucle scan: %s", exc)
+                logger.error("Boucle: %s", exc)
                 await asyncio.sleep(5)
 
     async def run(self) -> None:
@@ -167,7 +198,7 @@ async def main() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.error("Redemarrage dans %ds: %s", RESTART_DELAY_SEC, exc)
+            logger.error("Redemarrage %ds: %s", RESTART_DELAY_SEC, exc)
             logger.debug(traceback.format_exc())
             try:
                 await bot.shutdown()
