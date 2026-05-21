@@ -11,13 +11,19 @@ import aiohttp
 import pandas as pd
 
 from config import AppConfig, TF_SECONDS
-from scanner.ohlcv_providers import RAILWAY_CHAIN, OhlcvProvider, create_provider
+from scanner.ohlcv_providers import (
+    KUCOIN_MAX_LIMIT,
+    RAILWAY_CHAIN,
+    OhlcvProvider,
+    RateLimitError,
+    create_provider,
+)
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
-BOT_DATA_VERSION = "2026-05-21-stable-v7"
+BOT_DATA_VERSION = "2026-05-21-norate-v9"
 
 
 class MarketDataService:
@@ -33,18 +39,19 @@ class MarketDataService:
         self._providers: Dict[str, OhlcvProvider] = {}
         self.exchange_id: str = ""
 
-    async def start(self) -> None:
+    def _build_provider_chain(self) -> List[str]:
         primary = self.config.exchange.id.lower().strip()
         chain: List[str] = [primary]
-
         if self.config.exchange.fallback or os.getenv("RAILWAY_ENVIRONMENT"):
             for pid in RAILWAY_CHAIN:
                 if pid not in chain:
                     chain.append(pid)
+        return chain
 
-        self._provider_chain = chain
+    async def start(self) -> None:
+        self._provider_chain = self._build_provider_chain()
         errors: List[str] = []
-        for provider_id in chain:
+        for provider_id in self._provider_chain:
             try:
                 provider = self._get_provider(provider_id)
                 symbol = self.config.scan.symbols[0]
@@ -74,12 +81,20 @@ class MarketDataService:
         return self._providers[provider_id]
 
     def _provider_chain_for(self, limit: int) -> List[str]:
+        """Historique (>=100) : Binance 1 req. Refresh (<=30) : KuCoin si dispo."""
         chain = list(self._provider_chain)
         if self._provider and self._provider.name not in chain:
             chain.insert(0, self._provider.name)
-        if limit >= 200 and "binance_vision" in chain:
-            chain = ["binance_vision"] + [p for p in chain if p != "binance_vision"]
-        return chain
+
+        if limit > KUCOIN_MAX_LIMIT:
+            chain = [p for p in chain if p != "kucoin"]
+
+        if limit >= 100:
+            preferred = ["binance_vision", "mexc", "bybit"]
+            return [p for p in preferred if p in chain] + [p for p in chain if p not in preferred]
+
+        preferred = ["kucoin", "binance_vision", "mexc"]
+        return [p for p in preferred if p in chain] + [p for p in chain if p not in preferred]
 
     async def _fetch_with_fallback(
         self, symbol: str, timeframe: str, limit: int
@@ -97,12 +112,20 @@ class MarketDataService:
                 self._provider = provider
                 self.exchange_id = provider.name
                 return raw, provider.name
+            except RateLimitError:
+                errors.append(f"{provider_id}: 429")
+                logger.warning("429 %s — provider suivant", provider_id)
+                continue
             except aiohttp.ClientResponseError as exc:
                 errors.append(f"{provider_id}: HTTP {exc.status}")
                 if exc.status == 429:
-                    logger.warning("429 sur %s — essai provider suivant", provider_id)
+                    logger.warning("429 sur %s — provider suivant", provider_id)
                     continue
                 raise
+            except ValueError as exc:
+                errors.append(f"{provider_id}: {exc}")
+                logger.warning("Skip %s — %s", provider_id, exc)
+                continue
             except Exception as exc:
                 errors.append(f"{provider_id}: {exc}")
                 logger.warning("Echec fetch %s — %s", provider_id, exc)
@@ -188,7 +211,7 @@ class MarketDataService:
                     return cached.copy()
 
                 try:
-                    raw, _src = await self._fetch_with_fallback(symbol, timeframe, limit=20)
+                    raw, _src = await self._fetch_with_fallback(symbol, timeframe, limit=30)
                 except Exception as exc:
                     logger.warning("Refresh %s %s: %s — cache", symbol, timeframe, exc)
                     return cached.copy()

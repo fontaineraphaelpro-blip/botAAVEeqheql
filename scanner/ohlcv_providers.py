@@ -1,4 +1,4 @@
-"""OHLCV via API publiques HTTP — rate limit + fallback (Railway)."""
+"""OHLCV HTTP — budget API strict, pas de 429."""
 
 from __future__ import annotations
 
@@ -6,9 +6,11 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import aiohttp
+
+from utils.api_budget import acquire_request_slot, ban_kucoin, kucoin_is_banned
 
 logger = logging.getLogger(__name__)
 
@@ -16,20 +18,16 @@ BINANCE_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h"}
 KUCOIN_TF = {"1m": "1min", "5m": "5min", "15m": "15min", "1h": "1hour"}
 MEXC_TF = BINANCE_TF
 
-# Limite globale KuCoin (IP Railway partagée → très strict)
-_KUCOIN_LOCK = asyncio.Lock()
-_KUCOIN_NEXT_AT = 0.0
-KUCOIN_MIN_INTERVAL_SEC = 4.0
+# KuCoin : 1 seule requete (pas de pagination)
+KUCOIN_MAX_LIMIT = 150
 
 
-async def _kucoin_throttle() -> None:
-    global _KUCOIN_NEXT_AT
-    async with _KUCOIN_LOCK:
-        now = time.monotonic()
-        wait = _KUCOIN_NEXT_AT - now
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _KUCOIN_NEXT_AT = time.monotonic() + KUCOIN_MIN_INTERVAL_SEC
+class RateLimitError(Exception):
+    """Leve sur 429 → fallback immediat (pas 6 retries)."""
+
+    def __init__(self, provider: str) -> None:
+        self.provider = provider
+        super().__init__(f"{provider}: rate limit")
 
 
 def _symbol_usdt(symbol: str) -> str:
@@ -66,42 +64,21 @@ class _HttpProvider(OhlcvProvider):
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=30),
-                headers={"User-Agent": "AAVE-EQH-EQL-Bot/2.0"},
+                headers={"User-Agent": "AAVE-EQH-EQL-Bot/3.0"},
             )
         return self._session
 
-    async def _before_request(self) -> None:
-        if self.name == "kucoin":
-            await _kucoin_throttle()
-
-    async def _get_json(self, url: str, params: dict, *, max_retries: int = 6) -> dict:
-        last_exc: Exception | None = None
-        for attempt in range(max_retries):
-            await self._before_request()
-            session = await self._get_session()
-            async with session.get(url, params=params) as resp:
-                if resp.status == 429:
-                    wait = min(120.0, 8.0 * (2**attempt))
-                    logger.warning(
-                        "Rate limit 429 (%s) — attente %.0fs (tentative %d/%d)",
-                        self.name,
-                        wait,
-                        attempt + 1,
-                        max_retries,
-                    )
-                    await asyncio.sleep(wait)
-                    last_exc = aiohttp.ClientResponseError(
-                        resp.request_info,
-                        resp.history,
-                        status=429,
-                        message="Too Many Requests",
-                    )
-                    continue
-                resp.raise_for_status()
-                return await resp.json()
-        if last_exc:
-            raise last_exc
-        raise RuntimeError("HTTP request failed")
+    async def _get_json(self, url: str, params: dict) -> dict | list:
+        await acquire_request_slot()
+        session = await self._get_session()
+        async with session.get(url, params=params) as resp:
+            if resp.status == 429:
+                if self.name == "kucoin":
+                    ban_kucoin()
+                    logger.warning("KuCoin 429 — ban 10min, fallback")
+                raise RateLimitError(self.name)
+            resp.raise_for_status()
+            return await resp.json()
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
@@ -119,51 +96,26 @@ class KucoinProvider(_HttpProvider):
         limit: int,
         since_ms: Optional[int] = None,
     ) -> List[list]:
-        del since_ms  # jamais startAt — trop de 429 sur Railway
+        del since_ms
+        if kucoin_is_banned():
+            raise RateLimitError("kucoin-circuit")
+        if limit > KUCOIN_MAX_LIMIT:
+            raise ValueError(
+                f"KuCoin max {KUCOIN_MAX_LIMIT} bougies/req — utilise binance_vision pour historique"
+            )
+
         tf = KUCOIN_TF.get(timeframe)
         if not tf:
             raise ValueError(f"Timeframe non supporte: {timeframe}")
 
         pair = _symbol_dash(symbol)
         url = "https://api.kucoin.com/api/v1/market/candles"
-        import time as _time
-
-        # Une seule page pour refresh (<=150 bougies)
-        if limit <= 150:
-            params = {"type": tf, "symbol": pair, "endAt": int(_time.time())}
-            body = await self._get_json(url, params)
-            if body.get("code") != "200000":
-                raise RuntimeError(f"KuCoin API: {body}")
-            rows = body.get("data") or []
-            ohlcv = _parse_kucoin_rows(rows, limit)
-            return ohlcv[-limit:]
-
-        all_rows: list = []
-        end_at = int(_time.time())
-        pages = 0
-        max_pages = 8
-        while len(all_rows) < limit and pages < max_pages:
-            params = {"type": tf, "symbol": pair, "endAt": end_at}
-            body = await self._get_json(url, params)
-            pages += 1
-            if body.get("code") != "200000":
-                raise RuntimeError(f"KuCoin API: {body}")
-            batch = body.get("data") or []
-            if not batch:
-                break
-            parsed = _parse_kucoin_rows(batch, limit * 2)
-            if not parsed:
-                break
-            all_rows = parsed + all_rows
-            oldest_ts = parsed[0][0] // 1000
-            end_at = oldest_ts - 1
-            if len(batch) < 100:
-                break
-            await asyncio.sleep(1.0)
-
-        dedup = {r[0]: r for r in all_rows}
-        merged = sorted(dedup.values(), key=lambda x: x[0])
-        return merged[-limit:]
+        params = {"type": tf, "symbol": pair, "endAt": int(time.time())}
+        body = await self._get_json(url, params)
+        if body.get("code") != "200000":
+            raise RuntimeError(f"KuCoin API: {body}")
+        rows = body.get("data") or []
+        return _parse_kucoin_rows(rows, limit)[-limit:]
 
 
 def _parse_kucoin_rows(rows: list, cap: int) -> list:
@@ -200,6 +152,8 @@ class MexcProvider(_HttpProvider):
 
 
 class BinanceVisionProvider(_HttpProvider):
+    """1 requete = jusqu'a 1000 bougies — ideal historique Railway."""
+
     name = "binance_vision"
 
     async def fetch(
@@ -266,8 +220,8 @@ PROVIDERS = {
     "bybit": BybitProvider,
 }
 
-# KuCoin = TradingView ; fallback si 429
-RAILWAY_CHAIN = ("kucoin", "binance_vision", "mexc")
+# Binance Vision d'abord (1 req) — KuCoin seulement refresh court
+RAILWAY_CHAIN = ("binance_vision", "mexc", "kucoin")
 
 
 def create_provider(provider_id: str) -> OhlcvProvider:

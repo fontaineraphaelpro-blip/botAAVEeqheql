@@ -63,6 +63,7 @@ async def check_detection() -> None:
     import os
 
     os.environ["EXCHANGE"] = "kucoin"
+    os.environ["EXCHANGE_FALLBACK"] = "true"
     from config import get_config
     from scanner.market_data import MarketDataService
     from scanner.liquidity_detector import LiquidityDetector
@@ -83,9 +84,10 @@ async def check_detection() -> None:
         ts = market.last_closed_ts(df)
         r = det.scan_live(sym, tf, closed, ts)
         ok(f"scan_live -> {len(r.new_zones)} zones (test)")
-        await market.close()
     except Exception as exc:
         fail(f"detection: {exc}")
+    finally:
+        await market.close()
 
 
 def check_crash_handlers() -> None:
@@ -105,10 +107,37 @@ def check_crash_handlers() -> None:
             fail(f"manquant: {label}")
 
 
+async def check_rate_budget() -> None:
+    print("=== Budget API ===")
+    from utils.api_budget import acquire_request_slot, _MAX_PER_MINUTE, _MIN_INTERVAL_SEC
+
+    import time
+
+    t0 = time.monotonic()
+    for _i in range(3):
+        await acquire_request_slot()
+    elapsed = time.monotonic() - t0
+    ok(f"max {_MAX_PER_MINUTE}/min, interval {_MIN_INTERVAL_SEC}s (3 req ~{elapsed:.1f}s)")
+    from scanner.ohlcv_providers import KUCOIN_MAX_LIMIT, RAILWAY_CHAIN
+
+    ok(f"KuCoin max {KUCOIN_MAX_LIMIT} barres/req, chain={RAILWAY_CHAIN}")
+    from config import get_config
+    from scanner.market_data import MarketDataService
+
+    m = MarketDataService(get_config())
+    m._provider_chain = ["kucoin", "binance_vision", "mexc"]
+    bulk = m._provider_chain_for(600)
+    if "kucoin" in bulk:
+        fail("KuCoin ne doit pas etre utilise pour limit=600")
+    else:
+        ok(f"historique 600 barres -> {bulk[0]} en premier")
+
+
 async def main() -> None:
     check_imports()
     check_empty_guards()
     check_crash_handlers()
+    await check_rate_budget()
     await check_detection()
     print()
     if FAILURES:

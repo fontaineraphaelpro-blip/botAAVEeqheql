@@ -16,7 +16,7 @@ def _default_exchange() -> str:
     if os.getenv("EXCHANGE"):
         return os.getenv("EXCHANGE", "bybit")
     if os.getenv("RAILWAY_ENVIRONMENT"):
-        return "kucoin"
+        return "binance_vision"
     return "bybit"
 
 
@@ -58,7 +58,7 @@ class ScanConfig:
     )
     """Délai minimum entre deux appels API (anti-429, sans bloquer le timing bougie)."""
     min_api_gap_sec: float = field(
-        default_factory=lambda: _env_float("MIN_API_GAP_SEC", 5.0)
+        default_factory=lambda: _env_float("MIN_API_GAP_SEC", 10.0)
     )
     stale_retry_max: int = field(default_factory=lambda: _env_int("STALE_RETRY_MAX", 3))
     """Si panne API en live, rejoue au plus N bougies pour ne pas louper d'alerte."""
@@ -70,10 +70,7 @@ class ScanConfig:
 class ExchangeConfig:
     id: str = field(default_factory=_default_exchange)
     fallback: bool = field(
-        default_factory=lambda: os.getenv(
-            "EXCHANGE_FALLBACK",
-            "true" if os.getenv("RAILWAY_ENVIRONMENT") else "false",
-        ).lower()
+        default_factory=lambda: os.getenv("EXCHANGE_FALLBACK", "true").lower()
         in ("1", "true", "yes")
     )
     api_key: str = field(default_factory=lambda: os.getenv("EXCHANGE_API_KEY", "") or os.getenv("BINANCE_API_KEY", ""))
