@@ -100,6 +100,7 @@ def check_crash_handlers() -> None:
         ("_safe_telegram", "telegram protege"),
         ("refresh_if_due", "refresh aligne bougie"),
         ("_scan_cached", "scan depuis cache"),
+        ("await self._scan_cached", "scan apres chaque refresh"),
     ]
     for needle, label in checks:
         if needle in src:

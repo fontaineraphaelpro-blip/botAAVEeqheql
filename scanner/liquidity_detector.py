@@ -77,6 +77,15 @@ class LiquidityDetector:
         if not record_only:
             state.last_processed_bar = end_bar
             state.last_processed_ts = last_closed_ts
+            if merged.new_zones:
+                logger.info(
+                    "Alertes %s %s: %d zone(s) (bar %d, ts=%s)",
+                    symbol,
+                    timeframe,
+                    len(merged.new_zones),
+                    end_bar,
+                    last_closed_ts,
+                )
 
         return merged
 

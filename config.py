@@ -54,7 +54,7 @@ class ScanConfig:
     ohlcv_limit: int = field(default_factory=lambda: _env_int("OHLCV_LIMIT", 600))
     """Secondes après clôture 5m avant requête KuCoin (donnée dispo côté exchange)."""
     candle_close_buffer_sec: float = field(
-        default_factory=lambda: _env_float("CANDLE_CLOSE_BUFFER_SEC", 10.0)
+        default_factory=lambda: _env_float("CANDLE_CLOSE_BUFFER_SEC", 20.0)
     )
     """Délai minimum entre deux appels API (anti-429, sans bloquer le timing bougie)."""
     min_api_gap_sec: float = field(

@@ -145,6 +145,13 @@ class AAVEEqhEqlBot:
                 closed_ts,
                 max_gap_bars=self.config.scan.gap_fill_max_bars,
             )
+            if result.new_zones:
+                logger.info(
+                    "Telegram %s %s: %d alerte(s)",
+                    symbol,
+                    timeframe,
+                    len(result.new_zones),
+                )
             await self._handle_result(result, symbol, timeframe)
         except Exception as exc:
             logger.error("Scan %s %s: %s", symbol, timeframe, exc)
@@ -167,9 +174,9 @@ class AAVEEqhEqlBot:
 
                 for symbol in self.config.scan.symbols:
                     for tf in self.config.scan.timeframes:
-                        new_bar = await self.market.refresh_if_due(symbol, tf)
-                        if new_bar:
-                            await self._scan_cached(symbol, tf)
+                        await self.market.refresh_if_due(symbol, tf)
+                        # Toujours scanner apres refresh (meme si l'API est en retard)
+                        await self._scan_cached(symbol, tf)
             except Exception as exc:
                 logger.error("Boucle: %s", exc)
                 await asyncio.sleep(30)

@@ -24,8 +24,9 @@ from utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
-BOT_DATA_VERSION = "2026-05-21-scan-v10"
-LIVE_TAIL_BARS = 5
+BOT_DATA_VERSION = "2026-05-21-scan-v11"
+LIVE_TAIL_BARS = 15
+RETRY_AFTER_FETCH_SEC = 15.0
 
 
 def _live_use_kucoin() -> bool:
@@ -48,6 +49,7 @@ class MarketDataService:
         self._locks: Dict[CacheKey, asyncio.Lock] = {}
         self._last_api_fetch: Dict[CacheKey, float] = {}
         self._last_closed_ts: Dict[CacheKey, int] = {}
+        self._retry_at: Dict[CacheKey, float] = {}
         self._live_provider: str | None = _default_live_provider() or None
         self._provider: OhlcvProvider | None = None
         self._provider_chain: List[str] = []
@@ -199,7 +201,12 @@ class MarketDataService:
         return last_closed + pd.Timedelta(seconds=tf_sec + buffer)
 
     def seconds_until_refresh(self, symbol: str, timeframe: str) -> float:
-        """Attente jusqu'à la prochaine clôture 5m (+ buffer). Pas de retry rapide."""
+        """Attente jusqu'à la prochaine clôture 5m (+ buffer) ou retry court."""
+        key = (symbol, timeframe)
+        retry_at = self._retry_at.get(key)
+        if retry_at is not None:
+            return max(1.0, retry_at - time.monotonic())
+
         nxt = self.next_refresh_at(symbol, timeframe)
         if nxt is None:
             return 30.0
@@ -272,13 +279,16 @@ class MarketDataService:
             df = self._cache[key]
             new_closed_ts = self.last_closed_ts(df)
             if prev_closed_ts is not None and new_closed_ts <= prev_closed_ts:
-                logger.debug(
-                    "Pas encore de nouvelle bougie fermee %s %s — prochain refresh planifie",
+                self._retry_at[key] = time.monotonic() + RETRY_AFTER_FETCH_SEC
+                logger.info(
+                    "API en retard %s %s — retry scan dans %.0fs",
                     symbol,
                     timeframe,
+                    RETRY_AFTER_FETCH_SEC,
                 )
                 return False
 
+            self._retry_at.pop(key, None)
             self._last_closed_ts[key] = new_closed_ts
             logger.info(
                 "Nouvelle bougie %s %s via %s (ts=%s)",
