@@ -29,6 +29,7 @@ class AAVEEqhEqlBot:
         self.market = MarketDataService(config)
         self.detector = LiquidityDetector(config)
         self.telegram = TelegramNotifier(config)
+        self._warmup_info: tuple[int, float, int] | None = None
 
     async def _notify_zones(self, zones: list[LiquidityZone]) -> None:
         for zone in zones:
@@ -62,7 +63,10 @@ class AAVEEqhEqlBot:
 
                 df = await retry_async(_fetch, attempts=3, label="history")
                 if len(df) >= self.config.scan.min_bars:
-                    self.detector.warmup(symbol, timeframe, df)
+                    closed_n = max(0, len(df) - 1)
+                    zones = self.detector.warmup(symbol, timeframe, df)
+                    hours = closed_n * 5 / 60
+                    self._warmup_info = (closed_n, hours, zones)
                     return True
             except Exception as exc:
                 logger.warning(
@@ -90,7 +94,15 @@ class AAVEEqhEqlBot:
         for symbol in self.config.scan.symbols:
             for tf in self.config.scan.timeframes:
                 ok = await self._load_history(symbol, tf)
-                if not ok:
+                if ok and self._warmup_info:
+                    bars, hours, zones = self._warmup_info
+                    await self.telegram.send_raw(
+                        f"📊 Historique <code>{symbol}</code> {tf}\n"
+                        f"<code>{bars}</code> bougies 5m (~<code>{hours:.0f}h</code>) — "
+                        f"<code>{zones}</code> zones en mémoire.\n"
+                        f"Alertes = nouveaux EQH/EQL seulement."
+                    )
+                elif not ok:
                     logger.error("Historique indisponible %s %s — retry en boucle", symbol, tf)
 
     async def _scan(self, symbol: str, timeframe: str) -> None:

@@ -40,7 +40,7 @@ class PivotConfig:
     pivot_left: int = field(default_factory=lambda: _env_int("PIVOT_LEFT", 10))
     pivot_right: int = field(default_factory=lambda: _env_int("PIVOT_RIGHT", 2))
     threshold_pct: float = field(default_factory=lambda: _env_float("THRESHOLD_PCT", 0.03))
-    max_pivot_history: int = 50
+    max_pivot_history: int = field(default_factory=lambda: _env_int("MAX_PIVOT_HISTORY", 80))
     max_active_zones: int = 60
 
 
@@ -51,7 +51,7 @@ TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}
 class ScanConfig:
     symbols: tuple[str, ...] = ("AAVE/USDT",)
     timeframes: tuple[str, ...] = ("5m",)
-    ohlcv_limit: int = 300
+    ohlcv_limit: int = field(default_factory=lambda: _env_int("OHLCV_LIMIT", 600))
     """Secondes après clôture 5m avant requête KuCoin (donnée dispo côté exchange)."""
     candle_close_buffer_sec: float = field(
         default_factory=lambda: _env_float("CANDLE_CLOSE_BUFFER_SEC", 10.0)
@@ -62,7 +62,7 @@ class ScanConfig:
     )
     stale_retry_max: int = field(default_factory=lambda: _env_int("STALE_RETRY_MAX", 3))
     """Si panne API en live, rejoue au plus N bougies pour ne pas louper d'alerte."""
-    gap_fill_max_bars: int = field(default_factory=lambda: _env_int("GAP_FILL_MAX_BARS", 48))
+    gap_fill_max_bars: int = field(default_factory=lambda: _env_int("GAP_FILL_MAX_BARS", 96))
     min_bars: int = 80
 
 

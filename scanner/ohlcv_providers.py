@@ -141,7 +141,7 @@ class KucoinProvider(_HttpProvider):
         all_rows: list = []
         end_at = int(_time.time())
         pages = 0
-        max_pages = 4
+        max_pages = 8
         while len(all_rows) < limit and pages < max_pages:
             params = {"type": tf, "symbol": pair, "endAt": end_at}
             body = await self._get_json(url, params)

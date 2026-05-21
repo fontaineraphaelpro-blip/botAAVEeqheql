@@ -17,7 +17,7 @@ from utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
-BOT_DATA_VERSION = "2026-05-21-live-v5"
+BOT_DATA_VERSION = "2026-05-21-live-v6"
 
 
 class MarketDataService:
