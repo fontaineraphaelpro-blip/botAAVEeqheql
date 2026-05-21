@@ -1,4 +1,4 @@
-"""OHLCV AAVE/USDT — requêtes alignées clôture + fallback anti-429."""
+"""OHLCV — refresh aligné bougie, scan depuis cache (pas de spam API)."""
 
 from __future__ import annotations
 
@@ -18,12 +18,27 @@ from scanner.ohlcv_providers import (
     RateLimitError,
     create_provider,
 )
+from utils.api_budget import kucoin_is_banned
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
-BOT_DATA_VERSION = "2026-05-21-norate-v9"
+BOT_DATA_VERSION = "2026-05-21-scan-v10"
+LIVE_TAIL_BARS = 5
+
+
+def _live_use_kucoin() -> bool:
+    return os.getenv("LIVE_USE_KUCOIN", "false").lower() in ("1", "true", "yes")
+
+
+def _default_live_provider() -> str:
+    explicit = os.getenv("LIVE_REFRESH_PROVIDER", "").strip().lower()
+    if explicit:
+        return explicit
+    if os.getenv("RAILWAY_ENVIRONMENT") and not _live_use_kucoin():
+        return "binance_vision"
+    return ""
 
 
 class MarketDataService:
@@ -33,7 +48,7 @@ class MarketDataService:
         self._locks: Dict[CacheKey, asyncio.Lock] = {}
         self._last_api_fetch: Dict[CacheKey, float] = {}
         self._last_closed_ts: Dict[CacheKey, int] = {}
-        self._stale_retries: Dict[CacheKey, int] = {}
+        self._live_provider: str | None = _default_live_provider() or None
         self._provider: OhlcvProvider | None = None
         self._provider_chain: List[str] = []
         self._providers: Dict[str, OhlcvProvider] = {}
@@ -51,7 +66,7 @@ class MarketDataService:
     async def start(self) -> None:
         self._provider_chain = self._build_provider_chain()
         errors: List[str] = []
-        for provider_id in self._provider_chain:
+        for provider_id in self._chain_for_history():
             try:
                 provider = self._get_provider(provider_id)
                 symbol = self.config.scan.symbols[0]
@@ -59,9 +74,12 @@ class MarketDataService:
                 await provider.fetch(symbol, tf, limit=5)
                 self._provider = provider
                 self.exchange_id = provider.name
+                if not self._live_provider:
+                    self._live_provider = provider.name
                 logger.info(
-                    "Donnees marche connectees : %s (data %s)",
+                    "Donnees marche connectees : %s (live=%s, build %s)",
                     provider.name,
+                    self._live_provider or provider.name,
                     BOT_DATA_VERSION,
                 )
                 return
@@ -71,7 +89,6 @@ class MarketDataService:
 
         raise RuntimeError(
             "Aucune source OHLCV disponible. "
-            "Sur Railway utilise EXCHANGE=mexc (recommandé). "
             "Details: " + " | ".join(errors)
         )
 
@@ -80,27 +97,41 @@ class MarketDataService:
             self._providers[provider_id] = create_provider(provider_id)
         return self._providers[provider_id]
 
-    def _provider_chain_for(self, limit: int) -> List[str]:
-        """Historique (>=100) : Binance 1 req. Refresh (<=30) : KuCoin si dispo."""
+    def _chain_for_history(self) -> List[str]:
         chain = list(self._provider_chain)
         if self._provider and self._provider.name not in chain:
             chain.insert(0, self._provider.name)
-
+        chain = [p for p in chain if p != "kucoin" or not kucoin_is_banned()]
+        limit = self.config.scan.ohlcv_limit
         if limit > KUCOIN_MAX_LIMIT:
             chain = [p for p in chain if p != "kucoin"]
+        preferred = ["binance_vision", "mexc", "bybit"]
+        return [p for p in preferred if p in chain] + [p for p in chain if p not in preferred]
 
-        if limit >= 100:
-            preferred = ["binance_vision", "mexc", "bybit"]
-            return [p for p in preferred if p in chain] + [p for p in chain if p not in preferred]
+    def _chain_for_live(self) -> List[str]:
+        """Refresh live : provider stable, KuCoin seulement si explicitement active."""
+        chain = list(self._provider_chain)
+        if not _live_use_kucoin() or kucoin_is_banned():
+            chain = [p for p in chain if p != "kucoin"]
 
-        preferred = ["kucoin", "binance_vision", "mexc"]
+        preferred: List[str] = []
+        if self._live_provider and self._live_provider in chain:
+            preferred.append(self._live_provider)
+        default_live = _default_live_provider()
+        if default_live and default_live not in preferred:
+            preferred.append(default_live)
+        for pid in ("binance_vision", "mexc", "bybit"):
+            if pid not in preferred:
+                preferred.append(pid)
+
         return [p for p in preferred if p in chain] + [p for p in chain if p not in preferred]
 
     async def _fetch_with_fallback(
-        self, symbol: str, timeframe: str, limit: int
+        self, symbol: str, timeframe: str, limit: int, *, live: bool
     ) -> Tuple[list, str]:
         errors: List[str] = []
-        chain = self._provider_chain_for(limit)
+        chain = self._chain_for_live() if live else self._chain_for_history()
+        logged_429: set[str] = set()
 
         for provider_id in chain:
             provider = self._get_provider(provider_id)
@@ -111,24 +142,29 @@ class MarketDataService:
                     continue
                 self._provider = provider
                 self.exchange_id = provider.name
+                if live:
+                    self._live_provider = provider.name
                 return raw, provider.name
             except RateLimitError:
                 errors.append(f"{provider_id}: 429")
-                logger.warning("429 %s — provider suivant", provider_id)
+                if provider_id not in logged_429:
+                    logger.warning("429 %s — fallback", provider_id)
+                    logged_429.add(provider_id)
                 continue
             except aiohttp.ClientResponseError as exc:
                 errors.append(f"{provider_id}: HTTP {exc.status}")
                 if exc.status == 429:
-                    logger.warning("429 sur %s — provider suivant", provider_id)
+                    if provider_id not in logged_429:
+                        logger.warning("429 %s — fallback", provider_id)
+                        logged_429.add(provider_id)
                     continue
                 raise
             except ValueError as exc:
                 errors.append(f"{provider_id}: {exc}")
-                logger.warning("Skip %s — %s", provider_id, exc)
                 continue
             except Exception as exc:
                 errors.append(f"{provider_id}: {exc}")
-                logger.warning("Echec fetch %s — %s", provider_id, exc)
+                logger.warning("Echec %s — %s", provider_id, exc)
 
         raise RuntimeError("Tous les providers OHLCV ont echoue: " + " | ".join(errors))
 
@@ -163,87 +199,102 @@ class MarketDataService:
         return last_closed + pd.Timedelta(seconds=tf_sec + buffer)
 
     def seconds_until_refresh(self, symbol: str, timeframe: str) -> float:
+        """Attente jusqu'à la prochaine clôture 5m (+ buffer). Pas de retry rapide."""
         nxt = self.next_refresh_at(symbol, timeframe)
         if nxt is None:
-            return 0.0
-
-        key = (symbol, timeframe)
-        retries = self._stale_retries.get(key, 0)
-        if retries > 0:
-            return min(20.0, 8.0 * retries)
-
+            return 30.0
         delay = (nxt - pd.Timestamp.now(tz="UTC")).total_seconds()
-        return max(0.0, delay)
+        return max(1.0, delay)
 
-    def _should_refresh(self, key: CacheKey, timeframe: str, cached: pd.DataFrame) -> bool:
+    def _should_refresh(self, key: CacheKey, cached: pd.DataFrame) -> bool:
         min_gap = self.config.scan.min_api_gap_sec
         if time.monotonic() - self._last_api_fetch.get(key, 0.0) < min_gap:
             return False
 
-        if len(cached) < 2:
-            return True
-
         nxt = self.next_refresh_at(key[0], key[1])
         if nxt is None:
             return True
-
         return pd.Timestamp.now(tz="UTC") >= nxt
 
-    async def fetch_ohlcv(self, symbol: str, timeframe: str) -> pd.DataFrame:
+    async def load_history(self, symbol: str, timeframe: str) -> pd.DataFrame:
+        """Bootstrap : une requete bulk (Binance Vision)."""
         key = (symbol, timeframe)
         async with self._lock(key):
             limit = self.config.scan.ohlcv_limit
+            raw, src = await self._fetch_with_fallback(
+                symbol, timeframe, limit, live=False
+            )
+            df = self._to_df(raw)
+            self._cache[key] = df
+            self._last_api_fetch[key] = time.monotonic()
+            self._last_closed_ts[key] = self.last_closed_ts(df)
+            if not self._live_provider:
+                self._live_provider = src
+            logger.info("Historique via %s (%d barres)", src, len(df))
+            return df.copy()
+
+    async def refresh_if_due(self, symbol: str, timeframe: str) -> bool:
+        """
+        Max 1 requete API par bougie 5m. Retourne True si une nouvelle bougie fermee
+        a ete ajoutee au cache.
+        """
+        key = (symbol, timeframe)
+        async with self._lock(key):
             cached = self._cache.get(key)
+            if cached is None or len(cached) < self.config.scan.min_bars:
+                return False
+
+            if not self._should_refresh(key, cached):
+                return False
+
             prev_closed_ts = self._last_closed_ts.get(key)
+            limit = self.config.scan.ohlcv_limit
 
             try:
-                if cached is None or len(cached) < self.config.scan.min_bars:
-                    raw, src = await self._fetch_with_fallback(symbol, timeframe, limit)
-                    df = self._to_df(raw)
-                    self._cache[key] = df
-                    self._last_api_fetch[key] = time.monotonic()
-                    self._last_closed_ts[key] = self.last_closed_ts(df)
-                    self._stale_retries[key] = 0
-                    logger.info("Historique via %s (%d barres)", src, len(df))
-                    return df.copy()
-
-                if not self._should_refresh(key, timeframe, cached):
-                    return cached.copy()
-
-                try:
-                    raw, _src = await self._fetch_with_fallback(symbol, timeframe, limit=30)
-                except Exception as exc:
-                    logger.warning("Refresh %s %s: %s — cache", symbol, timeframe, exc)
-                    return cached.copy()
-
-                self._last_api_fetch[key] = time.monotonic()
-
-                if raw:
-                    new_df = self._to_df(raw)
-                    merged = (
-                        pd.concat([cached, new_df])
-                        .drop_duplicates(subset=["timestamp"])
-                        .sort_values("timestamp")
-                    )
-                    self._cache[key] = merged.tail(limit).reset_index(drop=True)
-
-                df = self._cache[key]
-                new_closed_ts = self.last_closed_ts(df)
-                if prev_closed_ts is not None and new_closed_ts == prev_closed_ts:
-                    retries = self._stale_retries.get(key, 0) + 1
-                    self._stale_retries[key] = retries
-                    if retries >= 1:
-                        self._last_api_fetch[key] = 0.0
-                else:
-                    self._stale_retries[key] = 0
-                    self._last_closed_ts[key] = new_closed_ts
-
-                return df.copy()
+                raw, src = await self._fetch_with_fallback(
+                    symbol, timeframe, LIVE_TAIL_BARS, live=True
+                )
             except Exception as exc:
-                if cached is not None and len(cached) >= self.config.scan.min_bars:
-                    logger.warning("API %s %s: %s — cache", symbol, timeframe, exc)
-                    return cached.copy()
-                raise
+                logger.warning("Refresh %s %s: %s — cache", symbol, timeframe, exc)
+                return False
+
+            self._last_api_fetch[key] = time.monotonic()
+
+            if raw:
+                new_df = self._to_df(raw)
+                merged = (
+                    pd.concat([cached, new_df])
+                    .drop_duplicates(subset=["timestamp"])
+                    .sort_values("timestamp")
+                )
+                self._cache[key] = merged.tail(limit).reset_index(drop=True)
+
+            df = self._cache[key]
+            new_closed_ts = self.last_closed_ts(df)
+            if prev_closed_ts is not None and new_closed_ts <= prev_closed_ts:
+                logger.debug(
+                    "Pas encore de nouvelle bougie fermee %s %s — prochain refresh planifie",
+                    symbol,
+                    timeframe,
+                )
+                return False
+
+            self._last_closed_ts[key] = new_closed_ts
+            logger.info(
+                "Nouvelle bougie %s %s via %s (ts=%s)",
+                symbol,
+                timeframe,
+                src,
+                pd.Timestamp(new_closed_ts, unit="s", tz="UTC"),
+            )
+            return True
+
+    async def fetch_ohlcv(self, symbol: str, timeframe: str) -> pd.DataFrame:
+        """Compat : historique ou refresh + cache."""
+        if not self.has_cache(symbol, timeframe):
+            return await self.load_history(symbol, timeframe)
+        await self.refresh_if_due(symbol, timeframe)
+        return self.get_cached(symbol, timeframe)
 
     def has_cache(self, symbol: str, timeframe: str) -> bool:
         key = (symbol, timeframe)

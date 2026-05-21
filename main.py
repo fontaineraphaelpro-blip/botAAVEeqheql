@@ -1,4 +1,4 @@
-"""Bot EQH/EQL — alertes live, boucle infinie anti-crash."""
+"""Bot EQH/EQL — alertes live, boucle alignée bougie (1 req / 5m)."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ class AAVEEqhEqlBot:
         for attempt in range(12):
             try:
                 async def _fetch(sym: str = symbol, tf: str = timeframe) -> object:
-                    return await self.market.fetch_ohlcv(sym, tf)
+                    return await self.market.load_history(sym, tf)
 
                 df = await retry_async(_fetch, attempts=3, label="history")
                 if len(df) >= self.config.scan.min_bars:
@@ -106,11 +106,12 @@ class AAVEEqhEqlBot:
         await retry_async(self.market.start, attempts=8, label="market")
         await retry_async(self.telegram.start, attempts=4, label="telegram")
 
+        live_src = self.market._live_provider or self.market.exchange_id
         await self._safe_telegram(
             f"✅ <b>Bot EQH/EQL actif</b>\n"
-            f"Exchange : <code>{self.market.exchange_id}</code>\n"
+            f"Donnees live : <code>{live_src}</code>\n"
             f"Build : <code>{BOT_DATA_VERSION}</code>\n"
-            f"Mode : <code>alertes LIVE</code>"
+            f"Mode : <code>1 req / bougie 5m</code>"
         )
 
         for symbol in self.config.scan.symbols:
@@ -126,16 +127,12 @@ class AAVEEqhEqlBot:
 
         await self._ensure_history()
 
-    async def _scan(self, symbol: str, timeframe: str) -> None:
+    async def _scan_cached(self, symbol: str, timeframe: str) -> None:
+        """Detection sur cache uniquement — zero requete HTTP."""
         try:
-            try:
-                df = await self.market.fetch_ohlcv(symbol, timeframe)
-            except Exception as exc:
-                logger.warning("Fetch %s %s: %s", symbol, timeframe, exc)
-                if not self.market.has_cache(symbol, timeframe):
-                    return
-                df = self.market.get_cached(symbol, timeframe)
-
+            if not self.market.has_cache(symbol, timeframe):
+                return
+            df = self.market.get_cached(symbol, timeframe)
             closed = self.market.closed_bars(df)
             if len(closed) < self.config.scan.min_bars:
                 return
@@ -154,6 +151,7 @@ class AAVEEqhEqlBot:
             logger.debug(traceback.format_exc())
 
     async def _run_loop(self) -> None:
+        """Attend la clôture 5m → 1 refresh → scan cache. Pas de retry rapide."""
         while True:
             try:
                 if not self._history_ready():
@@ -164,20 +162,25 @@ class AAVEEqhEqlBot:
                     for s in self.config.scan.symbols
                     for t in self.config.scan.timeframes
                 ]
-                wait = min(delays) if delays else 10.0
-                if wait > 0.5:
-                    await asyncio.sleep(wait)
+                wait = min(delays) if delays else 60.0
+                await asyncio.sleep(wait)
 
                 for symbol in self.config.scan.symbols:
                     for tf in self.config.scan.timeframes:
-                        await self._scan(symbol, tf)
+                        new_bar = await self.market.refresh_if_due(symbol, tf)
+                        if new_bar:
+                            await self._scan_cached(symbol, tf)
             except Exception as exc:
                 logger.error("Boucle: %s", exc)
-                await asyncio.sleep(5)
+                await asyncio.sleep(30)
 
     async def run(self) -> None:
         await self._bootstrap()
-        logger.info("Live scan — %s", self.market.exchange_id)
+        logger.info(
+            "Live scan — refresh %s, build %s",
+            self.market._live_provider or self.market.exchange_id,
+            BOT_DATA_VERSION,
+        )
         await self._run_loop()
 
     async def shutdown(self) -> None:

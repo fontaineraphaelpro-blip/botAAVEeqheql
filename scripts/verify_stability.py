@@ -74,7 +74,7 @@ async def check_detection() -> None:
     try:
         await market.start()
         sym, tf = "AAVE/USDT", "5m"
-        df = await market.fetch_ohlcv(sym, tf)
+        df = await market.load_history(sym, tf)
         if len(df) < c.scan.min_bars:
             fail(f"pas assez de barres: {len(df)}")
         else:
@@ -98,7 +98,8 @@ def check_crash_handlers() -> None:
         ("except Exception", "exceptions captees"),
         ("_ensure_history", "retry historique"),
         ("_safe_telegram", "telegram protege"),
-        ("has_cache", "fallback cache"),
+        ("refresh_if_due", "refresh aligne bougie"),
+        ("_scan_cached", "scan depuis cache"),
     ]
     for needle, label in checks:
         if needle in src:
@@ -109,9 +110,10 @@ def check_crash_handlers() -> None:
 
 async def check_rate_budget() -> None:
     print("=== Budget API ===")
-    from utils.api_budget import acquire_request_slot, _MAX_PER_MINUTE, _MIN_INTERVAL_SEC
-
+    import os
     import time
+
+    from utils.api_budget import acquire_request_slot, _MAX_PER_MINUTE, _MIN_INTERVAL_SEC
 
     t0 = time.monotonic()
     for _i in range(3):
@@ -126,11 +128,16 @@ async def check_rate_budget() -> None:
 
     m = MarketDataService(get_config())
     m._provider_chain = ["kucoin", "binance_vision", "mexc"]
-    bulk = m._provider_chain_for(600)
+    bulk = m._chain_for_history()
+    live = m._chain_for_live()
     if "kucoin" in bulk:
-        fail("KuCoin ne doit pas etre utilise pour limit=600")
+        fail("KuCoin ne doit pas etre utilise pour historique")
     else:
-        ok(f"historique 600 barres -> {bulk[0]} en premier")
+        ok(f"historique -> {bulk[0]} en premier")
+    if "kucoin" in live and os.getenv("LIVE_USE_KUCOIN", "").lower() not in ("1", "true", "yes"):
+        fail("KuCoin ne doit pas etre en live par defaut")
+    else:
+        ok(f"live refresh -> {live[0]} en premier")
 
 
 async def main() -> None:
