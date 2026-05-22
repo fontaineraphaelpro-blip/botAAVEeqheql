@@ -18,8 +18,10 @@ BINANCE_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h"}
 KUCOIN_TF = {"1m": "1min", "5m": "5min", "15m": "15min", "1h": "1hour"}
 MEXC_TF = BINANCE_TF
 
-# KuCoin : 1 seule requete (pas de pagination)
+# KuCoin : 1 req live (150 barres max). Pagination autorisee au demarrage seulement.
 KUCOIN_MAX_LIMIT = 150
+KUCOIN_STARTUP_PAGES_DEFAULT = 3
+KUCOIN_STARTUP_PAGE_GAP_SEC_DEFAULT = 15.0
 
 
 class RateLimitError(Exception):
@@ -116,6 +118,69 @@ class KucoinProvider(_HttpProvider):
             raise RuntimeError(f"KuCoin API: {body}")
         rows = body.get("data") or []
         return _parse_kucoin_rows(rows, limit)[-limit:]
+
+    async def fetch_paginated(
+        self,
+        symbol: str,
+        timeframe: str,
+        total_limit: int,
+        *,
+        max_pages: int = KUCOIN_STARTUP_PAGES_DEFAULT,
+        page_gap_sec: float = KUCOIN_STARTUP_PAGE_GAP_SEC_DEFAULT,
+    ) -> List[list]:
+        """Historique demarrage : N pages espacées (jamais en live)."""
+        if kucoin_is_banned():
+            raise RateLimitError("kucoin-circuit")
+
+        tf = KUCOIN_TF.get(timeframe)
+        if not tf:
+            raise ValueError(f"Timeframe non supporte: {timeframe}")
+
+        pair = _symbol_dash(symbol)
+        url = "https://api.kucoin.com/api/v1/market/candles"
+        pages = max(1, min(max_pages, (total_limit + KUCOIN_MAX_LIMIT - 1) // KUCOIN_MAX_LIMIT))
+        end_at = int(time.time())
+        all_rows: list = []
+
+        for page in range(pages):
+            if page > 0:
+                await asyncio.sleep(page_gap_sec)
+
+            params = {"type": tf, "symbol": pair, "endAt": end_at}
+            body = await self._get_json(url, params)
+            if body.get("code") != "200000":
+                raise RuntimeError(f"KuCoin API: {body}")
+
+            batch_rows = body.get("data") or []
+            if not batch_rows:
+                break
+
+            parsed = _parse_kucoin_rows(batch_rows, KUCOIN_MAX_LIMIT)
+            if not parsed:
+                break
+
+            all_rows = parsed + all_rows
+            oldest_sec = parsed[0][0] // 1000
+            end_at = oldest_sec - 1
+
+            logger.info(
+                "KuCoin historique page %d/%d — %d barres cumulees",
+                page + 1,
+                pages,
+                len(all_rows),
+            )
+
+            if len(all_rows) >= total_limit:
+                break
+            if len(batch_rows) < 50:
+                break
+
+        if not all_rows:
+            raise RuntimeError("KuCoin historique pagine vide")
+
+        dedup = {r[0]: r for r in all_rows}
+        merged = sorted(dedup.values(), key=lambda x: x[0])
+        return merged[-total_limit:]
 
 
 def _parse_kucoin_rows(rows: list, cap: int) -> list:

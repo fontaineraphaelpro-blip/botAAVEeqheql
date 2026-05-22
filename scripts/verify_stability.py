@@ -132,10 +132,9 @@ async def check_rate_budget() -> None:
     if c.exchange.id == "kucoin":
         ok(f"exchange=kucoin -> chart {TRADINGVIEW_CHART['kucoin']}")
     limit = m._history_limit()
-    if c.exchange.id == "kucoin" and limit > KUCOIN_MAX_LIMIT:
-        fail(f"historique kucoin limit {limit} > {KUCOIN_MAX_LIMIT}")
-    elif c.exchange.id == "kucoin":
-        ok(f"historique kucoin plafonne a {limit} barres")
+    pages = m._kucoin_startup_pages()
+    if c.exchange.id == "kucoin":
+        ok(f"historique kucoin: {pages} pages -> max {limit} barres (~{limit * 5 / 60:.0f}h)")
 
 
 async def main() -> None:

@@ -61,7 +61,13 @@ class ScanConfig:
         default_factory=lambda: _env_float("MIN_API_GAP_SEC", 10.0)
     )
     stale_retry_max: int = field(default_factory=lambda: _env_int("STALE_RETRY_MAX", 3))
-    """Si panne API en live, rejoue au plus N bougies pour ne pas louper d'alerte."""
+    """Pages KuCoin au demarrage (150 barres/page, espacement 15s)."""
+    kucoin_startup_pages: int = field(
+        default_factory=lambda: _env_int("KUCOIN_STARTUP_PAGES", 3)
+    )
+    kucoin_startup_page_gap_sec: float = field(
+        default_factory=lambda: _env_float("KUCOIN_STARTUP_PAGE_GAP_SEC", 15.0)
+    )
     gap_fill_max_bars: int = field(default_factory=lambda: _env_int("GAP_FILL_MAX_BARS", 96))
     min_bars: int = 80
 

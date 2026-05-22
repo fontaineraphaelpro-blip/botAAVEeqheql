@@ -13,6 +13,7 @@ import pandas as pd
 from config import AppConfig, TF_SECONDS
 from scanner.ohlcv_providers import (
     KUCOIN_MAX_LIMIT,
+    KucoinProvider,
     OhlcvProvider,
     RateLimitError,
     create_provider,
@@ -23,7 +24,7 @@ from utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 CacheKey = Tuple[str, str]
-BOT_DATA_VERSION = "2026-05-21-source-v12"
+BOT_DATA_VERSION = "2026-05-22-source-v13"
 LIVE_TAIL_BARS = 15
 RETRY_AFTER_FETCH_SEC = 15.0
 
@@ -87,11 +88,29 @@ class MarketDataService:
                     chain.append(pid)
         return chain
 
+    def _kucoin_startup_pages(self) -> int:
+        return max(1, self.config.scan.kucoin_startup_pages)
+
     def _history_limit(self) -> int:
         limit = self.config.scan.ohlcv_limit
         if self._data_provider == "kucoin":
-            return min(limit, KUCOIN_MAX_LIMIT)
+            cap = KUCOIN_MAX_LIMIT * self._kucoin_startup_pages()
+            return min(limit, cap)
         return limit
+
+    async def _fetch_kucoin_history(
+        self, symbol: str, timeframe: str, limit: int
+    ) -> list:
+        provider = self._get_provider("kucoin")
+        if not isinstance(provider, KucoinProvider):
+            raise TypeError("Provider kucoin attendu")
+        return await provider.fetch_paginated(
+            symbol,
+            timeframe,
+            limit,
+            max_pages=self._kucoin_startup_pages(),
+            page_gap_sec=self.config.scan.kucoin_startup_page_gap_sec,
+        )
 
     async def start(self) -> None:
         errors: List[str] = []
@@ -232,15 +251,28 @@ class MarketDataService:
         key = (symbol, timeframe)
         async with self._lock(key):
             limit = self._history_limit()
-            raw, src = await self._fetch_with_fallback(symbol, timeframe, limit)
+            primary = _configured_provider(self.config)
+
+            if primary == "kucoin" and "kucoin" in self._fetch_chain():
+                try:
+                    raw = await self._fetch_kucoin_history(symbol, timeframe, limit)
+                    src = "kucoin"
+                except Exception as exc:
+                    logger.warning("Historique KuCoin pagine echoue: %s — fallback", exc)
+                    raw, src = await self._fetch_with_fallback(symbol, timeframe, limit)
+            else:
+                raw, src = await self._fetch_with_fallback(symbol, timeframe, limit)
+
             df = self._to_df(raw)
             self._store_cache(key, df, src)
             self._last_api_fetch[key] = time.monotonic()
             self._last_closed_ts[key] = self.last_closed_ts(df)
+            hours = (len(df) - 1) * TF_SECONDS.get(timeframe, 300) / 3600
             logger.info(
-                "Historique %s (%d barres) — chart TV : %s",
+                "Historique %s (%d barres, ~%.1fh) — chart TV : %s",
                 src,
                 len(df),
+                hours,
                 TRADINGVIEW_CHART.get(src, "?"),
             )
             return df.copy()
