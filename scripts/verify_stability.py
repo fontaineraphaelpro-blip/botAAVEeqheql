@@ -123,22 +123,19 @@ async def check_rate_budget() -> None:
     ok(f"max {_MAX_PER_MINUTE}/min, interval {_MIN_INTERVAL_SEC}s (3 req ~{elapsed:.1f}s)")
     from scanner.ohlcv_providers import KUCOIN_MAX_LIMIT, RAILWAY_CHAIN
 
-    ok(f"KuCoin max {KUCOIN_MAX_LIMIT} barres/req, chain={RAILWAY_CHAIN}")
+    ok(f"KuCoin max {KUCOIN_MAX_LIMIT} barres/req")
     from config import get_config
-    from scanner.market_data import MarketDataService
+    from scanner.market_data import MarketDataService, TRADINGVIEW_CHART
 
-    m = MarketDataService(get_config())
-    m._provider_chain = ["kucoin", "binance_vision", "mexc"]
-    bulk = m._chain_for_history()
-    live = m._chain_for_live()
-    if "kucoin" in bulk:
-        fail("KuCoin ne doit pas etre utilise pour historique")
-    else:
-        ok(f"historique -> {bulk[0]} en premier")
-    if "kucoin" in live and os.getenv("LIVE_USE_KUCOIN", "").lower() not in ("1", "true", "yes"):
-        fail("KuCoin ne doit pas etre en live par defaut")
-    else:
-        ok(f"live refresh -> {live[0]} en premier")
+    c = get_config()
+    m = MarketDataService(c)
+    if c.exchange.id == "kucoin":
+        ok(f"exchange=kucoin -> chart {TRADINGVIEW_CHART['kucoin']}")
+    limit = m._history_limit()
+    if c.exchange.id == "kucoin" and limit > KUCOIN_MAX_LIMIT:
+        fail(f"historique kucoin limit {limit} > {KUCOIN_MAX_LIMIT}")
+    elif c.exchange.id == "kucoin":
+        ok(f"historique kucoin plafonne a {limit} barres")
 
 
 async def main() -> None:

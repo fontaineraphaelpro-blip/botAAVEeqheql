@@ -12,12 +12,12 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 def _default_exchange() -> str:
-    """Railway : MEXC (1 req, pas de 429). Local : Bybit. Override via EXCHANGE."""
+    """Par defaut KuCoin (aligne TradingView KUCOIN:AAVEUSDT)."""
     if os.getenv("EXCHANGE"):
-        return os.getenv("EXCHANGE", "bybit")
+        return os.getenv("EXCHANGE", "kucoin")
     if os.getenv("RAILWAY_ENVIRONMENT"):
-        return "binance_vision"
-    return "bybit"
+        return "kucoin"
+    return "kucoin"
 
 
 def _env_int(name: str, default: int) -> int:

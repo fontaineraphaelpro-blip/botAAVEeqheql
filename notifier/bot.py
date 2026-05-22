@@ -64,10 +64,12 @@ class TelegramNotifier:
         bias = get_bias(zone, is_sweep=is_sweep)
         return f"\n{bias.line}\n"
 
-    async def notify_eqh(self, zone: LiquidityZone) -> None:
+    async def notify_eqh(self, zone: LiquidityZone, *, chart: str = "") -> None:
+        chart_line = f"Chart TV : <code>{chart}</code>\n" if chart else ""
         msg = (
-            f"🔴 <b>EQH détecté</b>\n"
+            f"🔴 <b>EQH détecté</b> (equal highs — sommets)\n"
             f"{self._bias_block(zone, is_sweep=False)}"
+            f"{chart_line}"
             f"Pair : <code>{zone.display_symbol}</code>\n"
             f"TF : <code>{zone.timeframe}</code>\n"
             f"Prix : <code>{zone.sweep_level:.4f}</code>\n"
@@ -78,10 +80,12 @@ class TelegramNotifier:
         )
         await self.send_raw(msg)
 
-    async def notify_eql(self, zone: LiquidityZone) -> None:
+    async def notify_eql(self, zone: LiquidityZone, *, chart: str = "") -> None:
+        chart_line = f"Chart TV : <code>{chart}</code>\n" if chart else ""
         msg = (
-            f"🟢 <b>EQL détecté</b>\n"
+            f"🟢 <b>EQL détecté</b> (equal lows — creux)\n"
             f"{self._bias_block(zone, is_sweep=False)}"
+            f"{chart_line}"
             f"Pair : <code>{zone.display_symbol}</code>\n"
             f"TF : <code>{zone.timeframe}</code>\n"
             f"Prix : <code>{zone.sweep_level:.4f}</code>\n"
@@ -118,11 +122,11 @@ class TelegramNotifier:
         )
         await self.send_raw(msg)
 
-    async def notify_zone(self, zone: LiquidityZone) -> None:
+    async def notify_zone(self, zone: LiquidityZone, *, chart: str = "") -> None:
         if zone.zone_type == ZoneType.EQH:
-            await self.notify_eqh(zone)
+            await self.notify_eqh(zone, chart=chart)
         else:
-            await self.notify_eql(zone)
+            await self.notify_eql(zone, chart=chart)
 
     async def notify_sweep(self, zone: LiquidityZone, sweep_type: str) -> None:
         if sweep_type == "EQH_SWEEP":

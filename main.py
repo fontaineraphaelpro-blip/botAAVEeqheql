@@ -46,9 +46,10 @@ class AAVEEqhEqlBot:
             logger.error("Telegram: %s", exc)
 
     async def _notify_zones(self, zones: list[LiquidityZone]) -> None:
+        chart = self.market.tradingview_chart()
         for zone in zones:
             try:
-                await self.telegram.notify_zone(zone)
+                await self.telegram.notify_zone(zone, chart=chart)
                 logger.info(
                     "%s %s %s @ %.4f",
                     zone.zone_type.value,
@@ -106,10 +107,12 @@ class AAVEEqhEqlBot:
         await retry_async(self.market.start, attempts=8, label="market")
         await retry_async(self.telegram.start, attempts=4, label="telegram")
 
-        live_src = self.market._live_provider or self.market.exchange_id
+        live_src = self.market.data_source_label()
+        chart = self.market.tradingview_chart()
         await self._safe_telegram(
             f"✅ <b>Bot EQH/EQL actif</b>\n"
-            f"Donnees live : <code>{live_src}</code>\n"
+            f"Source : <code>{live_src}</code>\n"
+            f"Chart TV : <code>{chart}</code> 5m\n"
             f"Build : <code>{BOT_DATA_VERSION}</code>\n"
             f"Mode : <code>1 req / bougie 5m</code>"
         )
@@ -184,8 +187,9 @@ class AAVEEqhEqlBot:
     async def run(self) -> None:
         await self._bootstrap()
         logger.info(
-            "Live scan — refresh %s, build %s",
-            self.market._live_provider or self.market.exchange_id,
+            "Live scan — %s | chart %s | build %s",
+            self.market.data_source_label(),
+            self.market.tradingview_chart(),
             BOT_DATA_VERSION,
         )
         await self._run_loop()
