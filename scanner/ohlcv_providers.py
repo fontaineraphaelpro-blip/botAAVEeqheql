@@ -64,7 +64,10 @@ class _HttpProvider(OhlcvProvider):
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
+            # ThreadedResolver : DNS de l'OS (aiodns/pycares casse sous Windows)
+            connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
             self._session = aiohttp.ClientSession(
+                connector=connector,
                 timeout=aiohttp.ClientTimeout(total=30),
                 headers={"User-Agent": "AAVE-EQH-EQL-Bot/3.0"},
             )

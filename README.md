@@ -1,3 +1,46 @@
+# Paper Trader autonome AAVE/USDT + Bot EQH/EQL
+
+## 🤖 Paper Trader (`trader_main.py`) — NOUVEAU
+
+Bot de trading **autonome en paper trading** : il part d'une mise de départ virtuelle
+(1000 USDT par défaut), prend des positions LONG/SHORT sur AAVE/USDT et notifie
+chaque action sur Telegram.
+
+### Stratégie (validée par backtest 12 mois : +69 %, drawdown -28 %, ~0.6 trade/jour)
+
+Règle de base de l'indicateur TradingView : **clôture au-dessus de la ligne grise
+(EMA20 en 30min) → LONG, en dessous → SHORT.**
+
+La règle brute perd de l'argent en marché sans tendance (~-60 %/an testé), donc
+trois protections validées par backtest s'y ajoutent :
+
+| Amélioration | Rôle |
+|--------------|------|
+| Filtre tendance 4h (EMA50 > EMA200) | Longs uniquement en tendance de fond haussière, shorts en baissière |
+| Efficiency ratio ≥ 0.35 | Ne trade que quand le marché est directionnel (élimine le chop) |
+| Stop 2.5×ATR + trailing chandelier 3×ATR | Coupe les pertes court, laisse courir les gains |
+
+### Notifications Telegram
+
+- 🟢/🔴 Ouverture LONG/SHORT (entrée, stop, taille, contexte)
+- ✅/🛑 Fermeture (PnL du trade, solde, stats globales)
+- 🔒 Position protégée (trailing stop passé au-dessus de l'entrée)
+- 📊 Rapport quotidien (équité, winrate, position en cours)
+
+### Lancement
+
+```powershell
+python trader_main.py
+```
+
+L'état (solde, position, historique des trades) est sauvegardé dans
+`data/paper_state.json` — le bot reprend où il en était après un redémarrage.
+
+Paramètres réglables dans `.env` (voir `.env.example`) : `START_BALANCE`,
+`SIGNAL_TF_MIN`, `EMA_LEN`, `STOP_ATR`, `TRAIL_ATR`, `ER_MIN`, etc.
+
+---
+
 # Bot EQH/EQL AAVE — Binance + Telegram
 
 Détection automatique des **Equal Highs (EQH)**, **Equal Lows (EQL)** et **liquidity sweeps**, reproduisant la logique de l’indicateur LuxAlgo *EQH/EQL Liquidity Zones* — sans TradingView.

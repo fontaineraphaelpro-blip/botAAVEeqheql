@@ -84,6 +84,37 @@ class ExchangeConfig:
 
 
 @dataclass(frozen=True)
+class TradingConfig:
+    """Paramètres du bot de paper trading (validés par backtest 12 mois).
+
+    Règle de base : clôture au-dessus de l'EMA (ligne grise) => LONG,
+    en dessous => SHORT. Filtres : tendance 4h (EMA50>EMA200) + efficiency
+    ratio pour éviter le chop. Stop ATR initial + trailing chandelier.
+    """
+
+    start_balance: float = field(default_factory=lambda: _env_float("START_BALANCE", 1000.0))
+    position_pct: float = field(default_factory=lambda: _env_float("POSITION_PCT", 100.0))
+    signal_tf_min: int = field(default_factory=lambda: _env_int("SIGNAL_TF_MIN", 30))
+    ema_len: int = field(default_factory=lambda: _env_int("EMA_LEN", 20))
+    atr_len: int = field(default_factory=lambda: _env_int("ATR_LEN", 14))
+    stop_atr: float = field(default_factory=lambda: _env_float("STOP_ATR", 2.5))
+    trail_atr: float = field(default_factory=lambda: _env_float("TRAIL_ATR", 3.0))
+    er_len: int = field(default_factory=lambda: _env_int("ER_LEN", 20))
+    er_min: float = field(default_factory=lambda: _env_float("ER_MIN", 0.35))
+    htf_fast: int = field(default_factory=lambda: _env_int("HTF_FAST", 50))
+    htf_slow: int = field(default_factory=lambda: _env_int("HTF_SLOW", 200))
+    htf_tf_min: int = field(default_factory=lambda: _env_int("HTF_TF_MIN", 240))
+    fee_pct: float = field(default_factory=lambda: _env_float("FEE_PCT", 0.05))
+    slippage_pct: float = field(default_factory=lambda: _env_float("SLIPPAGE_PCT", 0.03))
+    state_file: str = field(
+        default_factory=lambda: os.getenv("PAPER_STATE_FILE", "data/paper_state.json")
+    )
+    daily_report_hour_utc: int = field(
+        default_factory=lambda: _env_int("DAILY_REPORT_HOUR_UTC", 7)
+    )
+
+
+@dataclass(frozen=True)
 class TelegramConfig:
     token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
     chat_id: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
@@ -93,6 +124,7 @@ class TelegramConfig:
 class AppConfig:
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    trading: TradingConfig = field(default_factory=TradingConfig)
     pivot: PivotConfig = field(default_factory=PivotConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
