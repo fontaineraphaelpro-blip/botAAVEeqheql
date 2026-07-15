@@ -114,6 +114,46 @@ class TradingConfig:
     )
 
 
+SHORT_UNIVERSE = (
+    "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "SOLUSDT", "DOGEUSDT",
+    "DOTUSDT", "LTCUSDT", "LINKUSDT", "AVAXUSDT", "UNIUSDT", "ATOMUSDT",
+    "ETCUSDT", "XLMUSDT", "FILUSDT", "AAVEUSDT", "SANDUSDT", "MANAUSDT",
+    "AXSUSDT", "NEARUSDT", "ALGOUSDT", "CRVUSDT", "COMPUSDT", "SNXUSDT",
+    "SUSHIUSDT", "1INCHUSDT", "GALAUSDT", "CHZUSDT", "ENJUSDT", "THETAUSDT",
+    "XTZUSDT", "GRTUSDT", "RUNEUSDT", "KSMUSDT",
+)
+
+
+@dataclass(frozen=True)
+class ShortsConfig:
+    """Chasseur de shorts multi-alts (backtest 2017-2026 : +225%, DD -32%).
+
+    Short uniquement quand BTC est en bear strict (prix < EMA 200j ET EMA en
+    baisse sur 30j). Entrée sur cassure du plus-bas 10 jours avec chute
+    directionnelle (ER). Max K positions, priorité aux alts les plus faibles.
+    """
+
+    start_balance: float = field(default_factory=lambda: _env_float("SHORTS_START_BALANCE", 1000.0))
+    max_positions: int = field(default_factory=lambda: _env_int("SHORTS_MAX_POSITIONS", 5))
+    bar_tf_min: int = 120
+    low_n: int = field(default_factory=lambda: _env_int("SHORTS_LOW_N", 120))
+    er_len: int = field(default_factory=lambda: _env_int("SHORTS_ER_LEN", 20))
+    er_min: float = field(default_factory=lambda: _env_float("SHORTS_ER_MIN", 0.35))
+    atr_len: int = field(default_factory=lambda: _env_int("SHORTS_ATR_LEN", 14))
+    stop_atr: float = field(default_factory=lambda: _env_float("SHORTS_STOP_ATR", 3.0))
+    trail_atr: float = field(default_factory=lambda: _env_float("SHORTS_TRAIL_ATR", 4.0))
+    btc_ema_days: int = 200
+    btc_slope_days: int = 30
+    fee_pct: float = field(default_factory=lambda: _env_float("SHORTS_FEE_PCT", 0.05))
+    slippage_pct: float = field(default_factory=lambda: _env_float("SHORTS_SLIPPAGE_PCT", 0.05))
+    funding_pct_8h: float = field(default_factory=lambda: _env_float("SHORTS_FUNDING_PCT_8H", 0.01))
+    state_file: str = field(
+        default_factory=lambda: os.getenv("SHORTS_STATE_FILE", "data/shorts_state.json")
+    )
+    universe: tuple[str, ...] = SHORT_UNIVERSE
+    candle_close_buffer_sec: float = 45.0
+
+
 @dataclass(frozen=True)
 class TelegramConfig:
     token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
@@ -125,6 +165,7 @@ class AppConfig:
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
+    shorts: ShortsConfig = field(default_factory=ShortsConfig)
     pivot: PivotConfig = field(default_factory=PivotConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

@@ -1,1 +1,1 @@
-worker: python trader_main.py
+worker: python both_main.py

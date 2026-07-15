@@ -2,5 +2,5 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "python trader_main.py"
+startCommand = "python both_main.py"
 restartPolicyType = "always"
