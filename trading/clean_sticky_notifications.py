@@ -30,6 +30,8 @@ def msg_startup(trader: CleanStickyPaper, cfg, source: str) -> str:
         f"Vert=LONG · gris=ferme · rouge=SHORT\n"
         f"TF <code>{cfg.signal_tf_min}m</code> · EMA{cfg.ema_fast}/{cfg.ema_slow} · "
         f"x<code>{cfg.leverage:.0f}</code>\n"
+        f"Confirme entrée/sortie : <code>{cfg.confirm_bars}</code>/"
+        f"<code>{cfg.exit_confirm_bars}</code> bougies\n"
         f"Solde : <code>{s['balance']:.2f}</code> USDT · {pos_line}\n"
         f"<i>{source} · {_ts()}</i>"
     )

@@ -182,6 +182,12 @@ class CleanStickyConfig:
     liq_margin_pct: float = field(
         default_factory=lambda: _env_float("CLEAN_STICKY_LIQ_MARGIN_PCT", 95.0)
     )
+    # Nombre de bougies consecutives meme couleur avant d'ouvrir
+    confirm_bars: int = field(default_factory=lambda: _env_int("CLEAN_STICKY_CONFIRM_BARS", 2))
+    # Nombre de bougies consecutives hors couleur avant de fermer
+    exit_confirm_bars: int = field(
+        default_factory=lambda: _env_int("CLEAN_STICKY_EXIT_CONFIRM_BARS", 2)
+    )
     state_file: str = field(
         default_factory=lambda: os.getenv(
             "CLEAN_STICKY_STATE_FILE", "data/couleur_state.json"
