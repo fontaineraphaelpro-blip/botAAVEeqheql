@@ -21,13 +21,21 @@ TF_5M = "5m"
 
 
 class TradingEngine:
-    def __init__(self, config: AppConfig, market: MarketDataService, telegram) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        market: MarketDataService,
+        telegram,
+        *,
+        daily_reports: bool = True,
+    ) -> None:
         self.config = config
         self.cfg = config.trading
         self.market = market
         self.telegram = telegram
         self.strategy = EmaFlipStrategy(self.cfg)
         self.trader = PaperTrader(self.cfg)
+        self.daily_reports = daily_reports
 
         self._tf_history: pd.DataFrame | None = None
         self._last_tf_ts: pd.Timestamp | None = None
@@ -160,6 +168,8 @@ class TradingEngine:
 
     # ------------------------------------------------------------------ rapport
     async def _maybe_daily_report(self, price: float) -> None:
+        if not self.daily_reports:
+            return
         now = datetime.now(timezone.utc)
         today = now.strftime("%Y-%m-%d")
         if now.hour >= self.cfg.daily_report_hour_utc and self._last_report_date != today:

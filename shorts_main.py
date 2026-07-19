@@ -32,13 +32,16 @@ def _seconds_until_next_bar(buffer_sec: float) -> float:
 
 
 class ShortHunterBot:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, *, daily_reports: bool = True) -> None:
         self.config = config
         self.telegram = TelegramNotifier(config)
         self.engine = ShortHunterEngine(config, self.telegram)
-        self._last_report_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.daily_reports = daily_reports
+        self._last_report_date: str | None = None
 
     async def _maybe_daily_report(self) -> None:
+        if not self.daily_reports:
+            return
         now = datetime.now(timezone.utc)
         today = now.strftime("%Y-%m-%d")
         if now.hour >= DAILY_REPORT_HOUR_UTC and self._last_report_date != today:

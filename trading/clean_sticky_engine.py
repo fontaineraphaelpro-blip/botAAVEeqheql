@@ -23,7 +23,14 @@ def _tf_str(tf_min: int) -> str:
 
 
 class CleanStickyEngine:
-    def __init__(self, config: AppConfig, market: MarketDataService, telegram) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        market: MarketDataService,
+        telegram,
+        *,
+        daily_reports: bool = True,
+    ) -> None:
         self.config = config
         self.cfg = config.clean_sticky
         self.market = market
@@ -31,6 +38,7 @@ class CleanStickyEngine:
         self.strategy = CleanStickyStrategy(self.cfg)
         self.trader = CleanStickyPaper(self.cfg)
         self.tf = _tf_str(self.cfg.signal_tf_min)
+        self.daily_reports = daily_reports
 
         self._last_bar_ts: pd.Timestamp | None = None
         self._last_color: ColorState | None = None
@@ -132,6 +140,8 @@ class CleanStickyEngine:
         await self._maybe_daily_report(sig.close)
 
     async def _maybe_daily_report(self, price: float) -> None:
+        if not self.daily_reports:
+            return
         now = datetime.now(timezone.utc)
         today = now.strftime("%Y-%m-%d")
         if (

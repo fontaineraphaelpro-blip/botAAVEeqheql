@@ -9,6 +9,7 @@ import aiohttp
 import pandas as pd
 
 from config import AppConfig
+from trading.bot_ids import BOT_CHASSEUR, TAG_CHASSEUR, header
 from trading.short_paper import ShortPortfolio, ShortTrade
 from trading.short_strategy import ShortHunterStrategy, ShortSignal
 from utils.logger import setup_logger
@@ -120,26 +121,21 @@ class ShortHunterEngine:
 
     def _msg_open(self, pos, sig: ShortSignal) -> str:
         return (
-            f"🩸 <b>SHORT HUNTER — OUVERTURE</b>\n"
-            f"Coin : <code>{pos.symbol}</code>\n"
-            f"Entrée : <code>{pos.entry:.6g}</code> | Stop : <code>{pos.stop:.6g}</code>\n"
-            f"Taille : <code>{pos.notional:.2f} USDT</code>\n"
-            f"Raison : cassure du plus-bas {self.cfg.low_n // 12}j, "
-            f"momentum 7j <code>{sig.mom7d * 100:+.1f}%</code>, ER <code>{sig.er:.2f}</code>\n"
-            f"Positions ouvertes : {len(self.portfolio.positions)}/{self.cfg.max_positions}\n"
-            f"🕐 {_ts()}"
+            f"{header(TAG_CHASSEUR, f'🔴 SHORT <code>{pos.symbol}</code>')}\n"
+            f"Entrée <code>{pos.entry:.6g}</code> · stop <code>{pos.stop:.6g}</code>\n"
+            f"Taille <code>{pos.notional:.0f}</code> USDT · "
+            f"mom7j {sig.mom7d * 100:+.1f}% · ER {sig.er:.2f}\n"
+            f"Pos {len(self.portfolio.positions)}/{self.cfg.max_positions} · {_ts()}"
         )
 
     def _msg_close(self, trade: ShortTrade) -> str:
         emoji = "✅" if trade.pnl > 0 else "🛑"
         s = self.portfolio.stats()
         return (
-            f"{emoji} <b>SHORT HUNTER — RACHAT {trade.symbol}</b>\n"
-            f"Entrée : <code>{trade.entry:.6g}</code> → Sortie : <code>{trade.exit:.6g}</code>\n"
-            f"PnL : <code>{trade.pnl:+.2f} USDT</code> ({trade.pnl_pct:+.2f}%)\n"
-            f"Solde : <code>{s['balance']:.2f} USDT</code> ({s['pnl_pct']:+.2f}% total)\n"
-            f"Stats : {s['n']} trades, {s['winrate']:.0f}% gagnants\n"
-            f"🕐 {_ts()}"
+            f"{header(TAG_CHASSEUR, f'{emoji} Cover <code>{trade.symbol}</code>')}\n"
+            f"<code>{trade.entry:.6g}</code> → <code>{trade.exit:.6g}</code>\n"
+            f"PnL <code>{trade.pnl:+.2f}</code> USDT ({trade.pnl_pct:+.2f}%)\n"
+            f"Solde <code>{s['balance']:.2f}</code> · {_ts()}"
         )
 
     # ------------------------------------------------------------- cycle
@@ -159,10 +155,11 @@ class ShortHunterEngine:
         bear, info = self.strategy.btc_bear_regime(btc)
         if self._regime_bear is not None and bear != self._regime_bear:
             await self._send(
-                f"{'🐻' if bear else '🌤'} <b>SHORT HUNTER — changement de régime</b>\n"
-                f"BTC <code>{info['price']:.0f}</code> vs EMA200j <code>{info['ema200d']:.0f}</code>\n"
-                f"{'Bear strict ACTIF — la chasse est ouverte.' if bear else 'Bear terminé — le bot passe en veille (aucun nouveau short).'}\n"
-                f"🕐 {_ts()}"
+                f"{header(TAG_CHASSEUR, '🐻 Régime BTC' if bear else '🌤 Régime BTC')}\n"
+                f"BTC <code>{info['price']:.0f}</code> vs EMA200 "
+                f"<code>{info['ema200d']:.0f}</code>\n"
+                f"{'Bear ACTIF — chasse ouverte' if bear else 'Hors bear — veille'}\n"
+                f"{_ts()}"
             )
         self._regime_bear = bear
 
@@ -221,26 +218,25 @@ class ShortHunterEngine:
     def startup_message(self) -> str:
         s = self.portfolio.stats()
         return (
-            f"🩸 <b>Short Hunter démarré</b> (paper)\n"
-            f"Solde : <code>{s['balance']:.2f} USDT</code> | "
-            f"Positions : <code>{s['open']}</code>\n"
-            f"Univers : {len(self.cfg.universe)} alts | cycle 2h\n"
-            f"Règle : short cassure {self.cfg.low_n // 12}j si BTC en bear strict\n"
-            f"🕐 {_ts()}"
+            f"{header(TAG_CHASSEUR, f'<b>{BOT_CHASSEUR}</b> démarré')}\n"
+            f"Shorts multi-alts si BTC bear strict · cycle 2h\n"
+            f"Solde <code>{s['balance']:.2f}</code> · "
+            f"pos {s['open']}/{self.cfg.max_positions} · "
+            f"{len(self.cfg.universe)} alts\n"
+            f"{_ts()}"
         )
 
     def daily_message(self, prices: dict[str, float] | None = None) -> str:
         s = self.portfolio.stats()
         pos_lines = "".join(
-            f"  • <code>{p.symbol}</code> @ <code>{p.entry:.6g}</code>, stop <code>{p.stop:.6g}</code>\n"
+            f"  • <code>{p.symbol}</code> @ <code>{p.entry:.6g}</code>\n"
             for p in self.portfolio.positions.values()
         ) or "  <i>aucune</i>\n"
-        regime = "bear (chasse active)" if self._regime_bear else "hors bear (veille)"
+        regime = "bear ✓" if self._regime_bear else "veille"
         return (
-            f"📊 <b>Short Hunter — rapport</b>\n"
-            f"Solde : <code>{s['balance']:.2f} USDT</code> ({s['pnl_pct']:+.2f}%)\n"
-            f"Régime BTC : {regime}\n"
+            f"{header(TAG_CHASSEUR, f'📊 {BOT_CHASSEUR}')}\n"
+            f"Solde <code>{s['balance']:.2f}</code> ({s['pnl_pct']:+.2f}%) · BTC {regime}\n"
             f"Positions :\n{pos_lines}"
-            f"Trades : {s['n']}, {s['winrate']:.0f}% gagnants\n"
-            f"🕐 {_ts()}"
+            f"Trades {s['n']} · WR {s['winrate']:.0f}%\n"
+            f"{_ts()}"
         )
