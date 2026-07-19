@@ -1,4 +1,4 @@
-"""Moteur live Clean Sticky — bougies TF, flips couleur, paper x10."""
+"""Moteur live Clean Sticky — bougies TF, sync couleur → position, paper x10."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from config import AppConfig
 from scanner.market_data import MarketDataService
 from trading import clean_sticky_notifications as notif
 from trading.clean_sticky_paper import CleanStickyPaper
-from trading.clean_sticky_strategy import ColorState, CleanStickyStrategy
+from trading.clean_sticky_strategy import ColorState, CleanStickyStrategy, StickySignal
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -42,6 +42,30 @@ class CleanStickyEngine:
         except Exception as exc:
             logger.error("Telegram: %s", exc)
 
+    async def _sync_to_color(self, sig: StickySignal, *, reason_flip: bool) -> None:
+        """Aligne la position sur la couleur : vert=LONG, rouge=SHORT, gris=flat."""
+        if self.trader.in_position:
+            pos = self.trader.state.position
+            should_close = (
+                sig.color == ColorState.NEUTRAL
+                or (pos.side == 1 and sig.color != ColorState.BULL)
+                or (pos.side == -1 and sig.color != ColorState.BEAR)
+            )
+            if should_close:
+                reason = "gray" if sig.color == ColorState.NEUTRAL else "flip"
+                trade = self.trader.close(sig.close, reason)
+                await self._send(notif.msg_close(trade, self.trader, sig.color))
+
+        if not self.trader.in_position and self.trader.state.balance > 1.0:
+            if sig.color == ColorState.BULL:
+                pos = self.trader.open(1, sig.close, sig.color.label)
+                await self._send(notif.msg_open(pos, sig, self.trader.state.balance))
+            elif sig.color == ColorState.BEAR:
+                pos = self.trader.open(-1, sig.close, sig.color.label)
+                await self._send(notif.msg_open(pos, sig, self.trader.state.balance))
+            elif reason_flip:
+                logger.info("Couleur gris — reste flat")
+
     async def on_new_bar(self) -> None:
         df = self.market.get_cached(SYMBOL, self.tf)
         closed = self.market.closed_bars(df).set_index("timestamp")
@@ -67,11 +91,11 @@ class CleanStickyEngine:
             await self._maybe_daily_report(float(bar["close"]))
             return
 
-        # Premier passage : mémorise la couleur sans trader (pas d'entrée rétro)
+        # Premier passage : entre tout de suite (rouge→SHORT, vert→LONG, gris→flat)
         if self._last_color is None:
             self._last_color = sig.color
             logger.info(
-                "Warm color %s close=%.3f ema%d=%.3f ema%d=%.3f",
+                "Couleur initiale %s close=%.3f ema%d=%.3f ema%d=%.3f — sync position",
                 sig.color.label,
                 sig.close,
                 self.cfg.ema_fast,
@@ -79,6 +103,7 @@ class CleanStickyEngine:
                 self.cfg.ema_slow,
                 sig.ema_slow,
             )
+            await self._sync_to_color(sig, reason_flip=False)
             await self._maybe_daily_report(sig.close)
             return
 
@@ -103,29 +128,7 @@ class CleanStickyEngine:
             self.cfg.ema_slow,
             sig.ema_slow,
         )
-
-        # 2. Fermer si on quitte la couleur qui justifiait la position
-        if self.trader.in_position:
-            pos = self.trader.state.position
-            should_close = (
-                sig.color == ColorState.NEUTRAL
-                or (pos.side == 1 and sig.color != ColorState.BULL)
-                or (pos.side == -1 and sig.color != ColorState.BEAR)
-            )
-            if should_close:
-                reason = "gray" if sig.color == ColorState.NEUTRAL else "flip"
-                trade = self.trader.close(sig.close, reason)
-                await self._send(notif.msg_close(trade, self.trader, sig.color))
-
-        # 3. Ouvrir selon la nouvelle couleur
-        if not self.trader.in_position and self.trader.state.balance > 1.0:
-            if sig.color == ColorState.BULL:
-                pos = self.trader.open(1, sig.close, sig.color.label)
-                await self._send(notif.msg_open(pos, sig, self.trader.state.balance))
-            elif sig.color == ColorState.BEAR:
-                pos = self.trader.open(-1, sig.close, sig.color.label)
-                await self._send(notif.msg_open(pos, sig, self.trader.state.balance))
-
+        await self._sync_to_color(sig, reason_flip=True)
         await self._maybe_daily_report(sig.close)
 
     async def _maybe_daily_report(self, price: float) -> None:
