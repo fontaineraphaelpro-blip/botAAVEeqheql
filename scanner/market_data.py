@@ -327,8 +327,9 @@ class MarketDataService:
             new_closed_ts = self.last_closed_ts(df)
             if prev_closed_ts is not None and new_closed_ts <= prev_closed_ts:
                 self._retry_at[key] = time.monotonic() + RETRY_AFTER_FETCH_SEC
-                logger.info(
-                    "API en retard %s %s — retry dans %.0fs",
+                # Attente normale entre deux clôtures — pas une panne API
+                logger.debug(
+                    "Bougie pas encore dispo %s %s — retry dans %.0fs",
                     symbol,
                     timeframe,
                     RETRY_AFTER_FETCH_SEC,

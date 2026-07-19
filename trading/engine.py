@@ -33,8 +33,9 @@ class TradingEngine:
         self._last_tf_ts: pd.Timestamp | None = None
         self._last_5m_ts: pd.Timestamp | None = None
         self._be_notified = False
-        # Initialisé à aujourd'hui pour ne pas envoyer un rapport à chaque redémarrage
-        self._last_report_date: str | None = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # None = pas encore envoyé aujourd'hui. Si le bot redémarre après l'heure
+        # du rapport, on envoie quand même (évite 0 rapport pendant des jours).
+        self._last_report_date: str | None = None
 
     # ------------------------------------------------------------------ warmup
     async def warmup(self) -> None:
@@ -112,10 +113,11 @@ class TradingEngine:
         sig = self.strategy.compute(tf_df)
         if sig is None:
             return
+        htf = "bull" if sig.htf_bull else "bear" if sig.htf_bear else "flat"
         logger.info(
-            "TF%dmin close=%.3f ema=%.3f bias=%+d htf=%s er=%.2f",
+            "TF%dmin close=%.3f ema=%.3f bias=%+d htf=%s er=%.2f (min=%.2f) dir=%+d",
             self.cfg.signal_tf_min, sig.close, sig.ema, sig.bias,
-            "bull" if sig.htf_bull else "bear" if sig.htf_bear else "flat", sig.er,
+            htf, sig.er, self.cfg.er_min, sig.direction,
         )
 
         # 3. Trailing stop sur clôture TF
@@ -135,12 +137,24 @@ class TradingEngine:
                     await self._send(notif.msg_breakeven(pos))
 
         # 4. Entrée si flat
-        if not self.trader.in_position and sig.direction != 0:
-            entry = sig.close
-            stop = self.strategy.initial_stop(sig.direction, entry, sig.atr)
-            pos = self.trader.open(sig.direction, entry, sig.atr, stop)
-            self._be_notified = False
-            await self._send(notif.msg_open(pos, sig, self.trader.state.balance))
+        if not self.trader.in_position:
+            if sig.direction != 0:
+                entry = sig.close
+                stop = self.strategy.initial_stop(sig.direction, entry, sig.atr)
+                pos = self.trader.open(sig.direction, entry, sig.atr, stop)
+                self._be_notified = False
+                await self._send(notif.msg_open(pos, sig, self.trader.state.balance))
+            else:
+                why = []
+                if sig.bias == 0:
+                    why.append("prix=EMA")
+                elif sig.bias == 1 and not sig.htf_bull:
+                    why.append("htf pas bull")
+                elif sig.bias == -1 and not sig.htf_bear:
+                    why.append("htf pas bear")
+                if sig.er < self.cfg.er_min:
+                    why.append(f"er={sig.er:.2f}<{self.cfg.er_min:.2f}")
+                logger.info("Pas d'entrée — %s", " + ".join(why) or "filtres")
 
         await self._maybe_daily_report(float(last_5m["close"]))
 
