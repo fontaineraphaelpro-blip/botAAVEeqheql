@@ -23,10 +23,22 @@ async def retry_async(
             return await fn()
         except Exception as exc:
             last_exc = exc
+            # Erreurs permanentes Telegram — inutile de réessayer
+            name = type(exc).__name__
+            msg = str(exc).lower()
+            if name in ("Forbidden", "InvalidToken", "BadRequest") or "blocked" in msg:
+                raise
             if i + 1 >= attempts:
                 break
             wait = min(60.0, base_delay * (2**i))
-            logger.warning("%s echoue (%s) — retry %d/%d dans %.0fs", label, exc, i + 1, attempts, wait)
+            logger.warning(
+                "%s echoue (%s) — retry %d/%d dans %.0fs",
+                label,
+                exc,
+                i + 1,
+                attempts,
+                wait,
+            )
             await asyncio.sleep(wait)
     assert last_exc is not None
     raise last_exc

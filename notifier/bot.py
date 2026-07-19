@@ -50,6 +50,8 @@ class TelegramNotifier:
                 "TELEGRAM_CHAT_ID manquant — envoie /start au bot puis lance: python scripts/get_chat_id.py"
             )
 
+        from telegram.error import BadRequest, Forbidden
+
         async def _send() -> None:
             await self._bot.send_message(
                 chat_id=chat_id,
@@ -58,7 +60,19 @@ class TelegramNotifier:
                 disable_web_page_preview=True,
             )
 
-        await retry_async(_send, label="telegram_send")
+        try:
+            await retry_async(_send, label="telegram_send")
+        except Forbidden as exc:
+            logger.error(
+                "Telegram BLOQUÉ par l'utilisateur (chat_id=%s). "
+                "Ouvre le bot, débloque-le, envoie /start. Détail: %s",
+                chat_id,
+                exc,
+            )
+            raise
+        except BadRequest as exc:
+            logger.error("Telegram BadRequest (chat_id=%s): %s", chat_id, exc)
+            raise
 
     def _bias_block(self, zone: LiquidityZone, *, is_sweep: bool) -> str:
         bias = get_bias(zone, is_sweep=is_sweep)
