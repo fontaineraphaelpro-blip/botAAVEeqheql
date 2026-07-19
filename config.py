@@ -107,7 +107,7 @@ class TradingConfig:
     fee_pct: float = field(default_factory=lambda: _env_float("FEE_PCT", 0.05))
     slippage_pct: float = field(default_factory=lambda: _env_float("SLIPPAGE_PCT", 0.03))
     state_file: str = field(
-        default_factory=lambda: os.getenv("PAPER_STATE_FILE", "data/paper_state.json")
+        default_factory=lambda: os.getenv("PAPER_STATE_FILE", "data/tendance_state.json")
     )
     daily_report_hour_utc: int = field(
         default_factory=lambda: _env_int("DAILY_REPORT_HOUR_UTC", 7)
@@ -148,7 +148,7 @@ class ShortsConfig:
     slippage_pct: float = field(default_factory=lambda: _env_float("SHORTS_SLIPPAGE_PCT", 0.05))
     funding_pct_8h: float = field(default_factory=lambda: _env_float("SHORTS_FUNDING_PCT_8H", 0.01))
     state_file: str = field(
-        default_factory=lambda: os.getenv("SHORTS_STATE_FILE", "data/shorts_state.json")
+        default_factory=lambda: os.getenv("SHORTS_STATE_FILE", "data/chasseur_state.json")
     )
     universe: tuple[str, ...] = SHORT_UNIVERSE
     candle_close_buffer_sec: float = 45.0
@@ -184,7 +184,7 @@ class CleanStickyConfig:
     )
     state_file: str = field(
         default_factory=lambda: os.getenv(
-            "CLEAN_STICKY_STATE_FILE", "data/clean_sticky_state.json"
+            "CLEAN_STICKY_STATE_FILE", "data/couleur_state.json"
         )
     )
     daily_report_hour_utc: int = field(
