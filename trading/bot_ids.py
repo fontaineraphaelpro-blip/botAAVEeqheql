@@ -1,10 +1,6 @@
-"""Identité des 3 bots paper — noms clairs pour Telegram."""
+"""Identité des bots paper — noms clairs pour Telegram."""
 
 from __future__ import annotations
-
-# Clean Sticky : couleurs EMA 20/50 (vert=long, gris=ferme, rouge=short)
-BOT_COULEUR = "AAVE Couleur"
-TAG_COULEUR = "COULEUR"
 
 # Paper trader : EMA flip 30m + tendance 4h + efficiency ratio
 BOT_TENDANCE = "AAVE Tendance"

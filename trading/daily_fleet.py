@@ -1,20 +1,11 @@
-"""Rapport quotidien unique — les 3 bots."""
+"""Rapport quotidien unique — Tendance + Chasseur."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from trading import clean_sticky_notifications as cs_notif
 from trading import notifications as tendance_notif
-from trading.bot_ids import (
-    BOT_CHASSEUR,
-    BOT_COULEUR,
-    BOT_TENDANCE,
-    TAG_CHASSEUR,
-    TAG_COULEUR,
-    TAG_TENDANCE,
-)
-from trading.clean_sticky_paper import CleanStickyPaper
+from trading.bot_ids import BOT_CHASSEUR, BOT_TENDANCE, TAG_CHASSEUR, TAG_TENDANCE
 from trading.paper import PaperTrader
 
 
@@ -49,26 +40,18 @@ def section_chasseur(engine) -> str:
 
 def msg_unified_daily(
     *,
-    couleur: CleanStickyPaper,
     tendance: PaperTrader,
     chasseur_engine,
     aave_price: float,
 ) -> str:
-    eq_c = couleur.state.equity(aave_price)
     eq_t = tendance.state.equity(aave_price)
     eq_s = chasseur_engine.portfolio.stats()["balance"]
-    total = eq_c + eq_t + eq_s
-    start = (
-        couleur.state.start_balance
-        + tendance.state.start_balance
-        + chasseur_engine.portfolio.start_balance
-    )
+    total = eq_t + eq_s
+    start = tendance.state.start_balance + chasseur_engine.portfolio.start_balance
     return (
-        f"📊 <b>Rapport quotidien — 3 bots</b>\n"
+        f"📊 <b>Rapport quotidien — 2 bots</b>\n"
         f"Total ≈ <code>{total:.2f}</code> USDT "
         f"({_pct((total / start - 1) * 100 if start else 0)})\n"
-        f"────────────────\n"
-        f"{cs_notif.section_daily(couleur, aave_price)}\n"
         f"────────────────\n"
         f"{tendance_notif.section_daily(tendance, aave_price)}\n"
         f"────────────────\n"
@@ -81,7 +64,6 @@ def msg_unified_daily(
 def msg_fleet_startup(source: str) -> str:
     return (
         f"🤖 <b>Flotte paper démarrée</b>\n"
-        f"• <b>[{TAG_COULEUR}]</b> {BOT_COULEUR} — EMA couleurs 5m x10\n"
         f"• <b>[{TAG_TENDANCE}]</b> {BOT_TENDANCE} — EMA flip 30m + filtres\n"
         f"• <b>[{TAG_CHASSEUR}]</b> {BOT_CHASSEUR} — shorts alts si BTC bear\n"
         f"1 rapport/jour à 07:00 UTC · source AAVE : <code>{source}</code>\n"

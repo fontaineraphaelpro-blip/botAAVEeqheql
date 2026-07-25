@@ -155,50 +155,6 @@ class ShortsConfig:
 
 
 @dataclass(frozen=True)
-class CleanStickyConfig:
-    """AAVE Clean Sticky — couleurs EMA 20/50 (TradingView).
-
-    Vert (close > EMA20 > EMA50) => LONG
-    Rouge (close < EMA20 < EMA50) => SHORT
-    Gris (sinon) => ferme la position
-    Levier 10x, 100 % du solde en marge à chaque trade.
-    """
-
-    start_balance: float = field(
-        default_factory=lambda: _env_float("CLEAN_STICKY_START_BALANCE", 1000.0)
-    )
-    leverage: float = field(default_factory=lambda: _env_float("CLEAN_STICKY_LEVERAGE", 10.0))
-    position_pct: float = field(
-        default_factory=lambda: _env_float("CLEAN_STICKY_POSITION_PCT", 100.0)
-    )
-    signal_tf_min: int = field(default_factory=lambda: _env_int("CLEAN_STICKY_TF_MIN", 5))
-    ema_fast: int = field(default_factory=lambda: _env_int("CLEAN_STICKY_EMA_FAST", 20))
-    ema_slow: int = field(default_factory=lambda: _env_int("CLEAN_STICKY_EMA_SLOW", 50))
-    fee_pct: float = field(default_factory=lambda: _env_float("CLEAN_STICKY_FEE_PCT", 0.05))
-    slippage_pct: float = field(
-        default_factory=lambda: _env_float("CLEAN_STICKY_SLIPPAGE_PCT", 0.03)
-    )
-    # Liquidation paper si perte latente >= X % de la marge
-    liq_margin_pct: float = field(
-        default_factory=lambda: _env_float("CLEAN_STICKY_LIQ_MARGIN_PCT", 95.0)
-    )
-    # Nombre de bougies consecutives meme couleur avant d'ouvrir
-    confirm_bars: int = field(default_factory=lambda: _env_int("CLEAN_STICKY_CONFIRM_BARS", 2))
-    # Nombre de bougies consecutives hors couleur avant de fermer
-    exit_confirm_bars: int = field(
-        default_factory=lambda: _env_int("CLEAN_STICKY_EXIT_CONFIRM_BARS", 2)
-    )
-    state_file: str = field(
-        default_factory=lambda: os.getenv(
-            "CLEAN_STICKY_STATE_FILE", "data/couleur_state.json"
-        )
-    )
-    daily_report_hour_utc: int = field(
-        default_factory=lambda: _env_int("CLEAN_STICKY_DAILY_REPORT_HOUR_UTC", 7)
-    )
-
-
-@dataclass(frozen=True)
 class TelegramConfig:
     token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
     chat_id: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
@@ -210,7 +166,6 @@ class AppConfig:
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     shorts: ShortsConfig = field(default_factory=ShortsConfig)
-    clean_sticky: CleanStickyConfig = field(default_factory=CleanStickyConfig)
     pivot: PivotConfig = field(default_factory=PivotConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

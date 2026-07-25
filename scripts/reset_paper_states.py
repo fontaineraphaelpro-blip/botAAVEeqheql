@@ -1,4 +1,4 @@
-"""Remet les 3 historiques paper a zero (fichiers d'etat separes).
+"""Remet les historiques paper a zero (fichiers d'etat separes).
 
 Usage: python scripts/reset_paper_states.py
 """
@@ -13,13 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 
 STATES = {
-    "couleur_state.json": {
-        "balance": 1000.0,
-        "start_balance": 1000.0,
-        "position": None,
-        "trades": [],
-        "bot": "AAVE Couleur",
-    },
     "tendance_state.json": {
         "balance": 1000.0,
         "start_balance": 1000.0,
@@ -36,8 +29,8 @@ STATES = {
     },
 }
 
-# Anciens fichiers (ne plus utiliser)
 LEGACY = (
+    "couleur_state.json",
     "clean_sticky_state.json",
     "paper_state.json",
     "shorts_state.json",
