@@ -27,6 +27,13 @@ STATES = {
         "trades": [],
         "bot": "Chasseur Shorts",
     },
+    "analyst_paper.json": {
+        "balance": 1000.0,
+        "start_balance": 1000.0,
+        "position": None,
+        "trades": [],
+        "bot": "AAVE Analyst",
+    },
 }
 
 LEGACY = (
@@ -34,6 +41,7 @@ LEGACY = (
     "clean_sticky_state.json",
     "paper_state.json",
     "shorts_state.json",
+    "analyst_state.json",
 )
 
 

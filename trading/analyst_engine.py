@@ -1,8 +1,9 @@
-"""Moteur live AAVE Analyst — analyse 5m, prédictions Telegram, score de précision."""
+"""Moteur live AAVE Analyst — paper trade + mémoire persistante + apprentissage."""
 
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from trading.analyst_features import (
     label_from_return,
 )
 from trading.analyst_memory import PatternMemory
+from trading.analyst_paper import AnalystPaper
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -37,6 +39,7 @@ class AnalystState:
     last_alert_bar: str = ""
     last_label: str = ""
     last_pred_ts: str = ""
+    learns_since_save: int = 0
     pending: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +51,7 @@ class AnalystState:
             "last_alert_bar": self.last_alert_bar,
             "last_label": self.last_label,
             "last_pred_ts": self.last_pred_ts,
+            "learns_since_save": self.learns_since_save,
             "pending": self.pending,
         }
 
@@ -61,6 +65,7 @@ class AnalystState:
             last_alert_bar=str(d.get("last_alert_bar", "")),
             last_label=str(d.get("last_label", "")),
             last_pred_ts=str(d.get("last_pred_ts", "")),
+            learns_since_save=int(d.get("learns_since_save", 0)),
             pending=list(d.get("pending") or []),
         )
 
@@ -83,16 +88,35 @@ class AnalystEngine:
         )
         self.memory: PatternMemory | None = None
         self.state = AnalystState()
+        self.trader = AnalystPaper(
+            state_file=self.cfg.paper_state_file,
+            start_balance=self.cfg.start_balance,
+            position_pct=self.cfg.position_pct,
+            fee_pct=self.cfg.fee_pct,
+            slippage_pct=self.cfg.slippage_pct,
+        )
         self._last_5m_ts: pd.Timestamp | None = None
         self._state_path = Path(self.cfg.state_file)
+        self._runtime_mem = Path(self.cfg.runtime_memory_file)
+        self._seed_mem = Path(self.cfg.memory_file)
 
+    # ------------------------------------------------------------------ memory
     def load_memory(self) -> None:
-        path = Path(self.cfg.memory_file)
+        path = self._runtime_mem if self._runtime_mem.exists() else self._seed_mem
         if not path.exists():
             raise FileNotFoundError(
                 f"Mémoire Analyst introuvable: {path}. "
                 "Lance scripts/build_analyst_memory.py puis redéploie."
             )
+        # bootstrap runtime copy depuis le seed
+        if path == self._seed_mem and not self._runtime_mem.exists():
+            self._runtime_mem.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self._seed_mem, self._runtime_mem)
+            meta = self._seed_mem.with_suffix(".json")
+            if meta.exists():
+                shutil.copy2(meta, self._runtime_mem.with_suffix(".json"))
+            path = self._runtime_mem
+
         self.memory = PatternMemory.load(path)
         if (
             self.memory.params.lookback != self.params.lookback
@@ -105,11 +129,20 @@ class AnalystEngine:
             )
             self.params = self.memory.params
         logger.info(
-            "Analyst mémoire: %d motifs (source %s, %d barres)",
+            "Analyst mémoire: %d motifs depuis %s",
             self.memory.size,
-            self.memory.built_from or "?",
-            self.memory.n_source_bars,
+            path,
         )
+
+    def save_memory(self, *, force: bool = False) -> None:
+        if self.memory is None:
+            return
+        if not force and self.state.learns_since_save < self.cfg.memory_save_every:
+            return
+        self.memory.built_from = self.memory.built_from or "live"
+        self.memory.save(self._runtime_mem)
+        self.state.learns_since_save = 0
+        logger.info("Analyst mémoire sauvée (%d motifs) → %s", self.memory.size, self._runtime_mem)
 
     def load_state(self) -> None:
         if self._state_path.exists():
@@ -126,8 +159,27 @@ class AnalystEngine:
             json.dumps(self.state.to_dict(), indent=2), encoding="utf-8"
         )
 
+    def effective_min_confidence(self) -> float:
+        """S'améliore : plus sélectif si ça perd, un peu plus ouvert si ça gagne."""
+        base = self.cfg.min_confidence
+        if self.state.resolved < 20:
+            return base
+        acc = self.state.hits / self.state.resolved
+        if acc < 0.48:
+            return min(0.72, base + 0.10)
+        if acc > 0.56:
+            return max(0.50, base - 0.04)
+        return base
+
     def stats(self) -> dict[str, Any]:
         r = self.state.resolved
+        ps = self.trader.stats()
+        price = 0.0
+        try:
+            price = float(self.market.get_cached(SYMBOL, TF_5M)["close"].iloc[-1])
+        except Exception:
+            pass
+        eq = self.trader.state.equity(price) if price else self.trader.state.balance
         return {
             "memory_size": self.memory.size if self.memory else 0,
             "hits": self.state.hits,
@@ -135,6 +187,10 @@ class AnalystEngine:
             "accuracy_pct": (self.state.hits / r * 100.0) if r else 0.0,
             "alerts_today": self.state.alerts_today,
             "last_label": self.state.last_label,
+            "balance": eq,
+            "pnl_pct": ps["pnl_pct"],
+            "n_trades": ps["n"],
+            "winrate": ps["winrate"],
         }
 
     def startup_message(self, source: str) -> str:
@@ -145,6 +201,7 @@ class AnalystEngine:
             source=source,
             resolved=self.state.resolved,
             hits=self.state.hits,
+            trader=self.trader,
         )
 
     async def _send(self, text: str) -> None:
@@ -162,6 +219,25 @@ class AnalystEngine:
     def _ts_index(self, closed: pd.DataFrame) -> dict[str, int]:
         return {str(t): i for i, t in enumerate(closed.index)}
 
+    def _learn(
+        self,
+        vec: list[float] | None,
+        actual: int,
+        fwd: float,
+        *,
+        hit: bool,
+    ) -> None:
+        if self.memory is None or vec is None:
+            return
+        try:
+            # Erreur = double poids pour mieux mémoriser le vrai dénouement
+            times = 1 if hit else 2
+            for _ in range(times):
+                self.memory.append_online(vec, actual, fwd)
+            self.state.learns_since_save += times
+        except Exception as exc:
+            logger.debug("learn: %s", exc)
+
     def _resolve_pending(self, closed: pd.DataFrame) -> list[str]:
         if self.memory is None or not self.state.pending:
             return []
@@ -174,7 +250,6 @@ class AnalystEngine:
         for p in self.state.pending:
             key = str(p["bar_ts"])
             if key not in ts_map:
-                # Cache a roulé au-delà de cette barre — on abandonne
                 continue
             i0 = ts_map[key]
             if i0 + h >= len(closes):
@@ -187,12 +262,7 @@ class AnalystEngine:
             self.state.resolved += 1
             if hit:
                 self.state.hits += 1
-            vec = p.get("vec")
-            if vec is not None:
-                try:
-                    self.memory.append_online(vec, actual, fwd)
-                except Exception as exc:
-                    logger.debug("append online: %s", exc)
+            self._learn(p.get("vec"), actual, fwd, hit=hit)
             if p.get("alerted") and expected != 0:
                 msgs.append(
                     notif.msg_resolve(
@@ -204,7 +274,7 @@ class AnalystEngine:
                     )
                 )
             logger.info(
-                "Analyst resolve dir=%s fwd=%+.2f%% hit=%s (%d/%d)",
+                "Analyst learn dir=%s fwd=%+.2f%% hit=%s (%d/%d)",
                 expected,
                 fwd,
                 hit,
@@ -212,16 +282,34 @@ class AnalystEngine:
                 self.state.resolved,
             )
         self.state.pending = still[-150:]
+        self.save_memory()
         return msgs
 
-    def _bars_since_alert(self, closed: pd.DataFrame) -> int | None:
-        if not self.state.last_alert_bar:
-            return None
+    def _bars_since(self, closed: pd.DataFrame, bar_ts: str) -> int | None:
         ts_map = self._ts_index(closed)
-        i = ts_map.get(self.state.last_alert_bar)
+        i = ts_map.get(bar_ts)
         if i is None:
-            return self.cfg.alert_cooldown_bars
+            return None
         return len(closed) - 1 - i
+
+    async def _manage_position(self, closed: pd.DataFrame) -> None:
+        pos = self.trader.state.position
+        if pos is None:
+            return
+        last = closed.iloc[-1]
+        price = float(last["close"])
+        lo = float(last["low"])
+        hi = float(last["high"])
+
+        if self.trader.stop_hit(lo, hi):
+            trade = self.trader.close(pos.stop, "stop")
+            await self._send(notif.msg_close(trade, self.trader))
+            return
+
+        since = self._bars_since(closed, pos.entry_bar_ts)
+        if since is not None and since >= self.params.horizon:
+            trade = self.trader.close(price, "horizon")
+            await self._send(notif.msg_close(trade, self.trader))
 
     async def on_new_5m_close(self) -> None:
         if self.memory is None:
@@ -239,9 +327,10 @@ class AnalystEngine:
         for msg in self._resolve_pending(closed):
             await self._send(msg)
 
+        await self._manage_position(closed)
+
         need = self.params.lookback
         if len(closed) < need:
-            logger.debug("Analyst: pas assez de barres (%d < %d)", len(closed), need)
             self.save_state()
             return
 
@@ -259,54 +348,86 @@ class AnalystEngine:
             max_distance=self.cfg.max_distance,
         )
         bar_ts = str(last_5m_ts)
+        min_conf = self.effective_min_confidence()
+        price = float(closed["close"].iloc[-1])
 
         actionable = (
             pred.actionable
             and pred.n_matches >= self.cfg.min_matches
-            and pred.confidence >= self.cfg.min_confidence
+            and pred.confidence >= min_conf
         )
+
         if actionable:
-            since = self._bars_since_alert(closed)
-            if since is None or since >= self.cfg.alert_cooldown_bars:
-                await self._send(
-                    notif.msg_prediction(
-                        pred,
-                        price=float(closed["close"].iloc[-1]),
-                        bar_ts=bar_ts,
+            since_alert = self._bars_since(closed, self.state.last_alert_bar) if self.state.last_alert_bar else None
+            cooldown_ok = (
+                since_alert is None or since_alert >= self.cfg.alert_cooldown_bars
+            )
+
+            # Flip : signal opposé → ferme puis rouvre
+            pos = self.trader.state.position
+            if pos is not None and pred.direction == -pos.side and cooldown_ok:
+                trade = self.trader.close(price, "flip")
+                await self._send(notif.msg_close(trade, self.trader))
+                pos = None
+
+            if cooldown_ok and not self.trader.in_position:
+                try:
+                    opened = self.trader.open(
+                        pred.direction,
+                        price,
+                        entry_bar_ts=bar_ts,
+                        confidence=pred.confidence,
+                        pred_label=pred.label,
+                        stop_pct=self.cfg.stop_pct,
                     )
-                )
-                self.state.alerts_today += 1
-                self.state.last_alert_bar = bar_ts
-                self.state.last_label = pred.label
-                self.state.last_pred_ts = bar_ts
-                if not any(p.get("bar_ts") == bar_ts for p in self.state.pending):
-                    self.state.pending.append(
-                        {
-                            "bar_ts": bar_ts,
-                            "direction": int(pred.direction),
-                            "price": float(closed["close"].iloc[-1]),
-                            "vec": vec.tolist(),
-                            "alerted": True,
-                        }
+                    await self._send(
+                        notif.msg_open(
+                            opened,
+                            pred,
+                            self.trader.state.balance,
+                            horizon_min=self.params.horizon * 5,
+                        )
                     )
-                    if len(self.state.pending) > 200:
-                        self.state.pending = self.state.pending[-200:]
-                logger.info(
-                    "Analyst PRED %s conf=%.0f%% n=%d avg=%+.2f%%",
-                    pred.label,
-                    pred.confidence * 100,
-                    pred.n_matches,
-                    pred.avg_fwd_pct,
-                )
-            else:
-                logger.debug("Analyst %s en cooldown (%s barres)", pred.label, since)
+                    self.state.alerts_today += 1
+                    self.state.last_alert_bar = bar_ts
+                    self.state.last_label = pred.label
+                    self.state.last_pred_ts = bar_ts
+                    if not any(p.get("bar_ts") == bar_ts for p in self.state.pending):
+                        self.state.pending.append(
+                            {
+                                "bar_ts": bar_ts,
+                                "direction": int(pred.direction),
+                                "price": price,
+                                "vec": vec.tolist(),
+                                "alerted": True,
+                            }
+                        )
+                        if len(self.state.pending) > 200:
+                            self.state.pending = self.state.pending[-200:]
+                    logger.info(
+                        "Analyst TRADE %s conf=%.0f%% n=%d (seuil conf=%.2f)",
+                        pred.label,
+                        pred.confidence * 100,
+                        pred.n_matches,
+                        min_conf,
+                    )
+                except Exception as exc:
+                    logger.error("Analyst open: %s", exc)
+            elif not cooldown_ok:
+                logger.debug("Analyst %s cooldown (%s)", pred.label, since_alert)
         else:
             logger.debug(
-                "Analyst skip %s conf=%.2f n=%d dist=%.3f",
+                "Analyst skip %s conf=%.2f n=%d (besoin >=%.2f / %d)",
                 pred.label,
                 pred.confidence,
                 pred.n_matches,
-                pred.distance,
+                min_conf,
+                self.cfg.min_matches,
             )
 
         self.save_state()
+
+    def shutdown(self) -> None:
+        self.save_memory(force=True)
+        self.save_state()
+        self.trader.save()

@@ -3,7 +3,7 @@
 Noms :
 - AAVE Tendance — EMA flip 30m + filtres
 - Chasseur Shorts — multi-alts si BTC bear
-- AAVE Analyst — mémoire de motifs → prédictions Telegram
+- AAVE Analyst — motifs AAVE → paper trade + apprentissage
 
 1 source KuCoin AAVE 5m + 1 rapport quotidien unifié.
 """
@@ -148,7 +148,7 @@ class Fleet:
         except Exception:
             pass
         try:
-            self.analyst.save_state()
+            self.analyst.shutdown()
         except Exception:
             pass
 
