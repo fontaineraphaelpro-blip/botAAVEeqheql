@@ -38,11 +38,27 @@ def msg_startup(
     )
     return (
         f"{header(TAG_ANALYST, f'<b>{BOT_ANALYST}</b> démarré')}\n"
-        f"Paper actif · mémoire <code>{memory_size}</code> motifs · "
-        f"{lookback}×5m → {horizon}×5m (~{horizon * 5} min)\n"
+        f"Paper continu · mémoire <code>{memory_size}</code> motifs · "
+        f"analyse chaque 5m · horizon {horizon}×5m (~{horizon * 5} min)\n"
         f"Solde <code>{s['balance']:.2f}</code> · {pos_line}\n"
         f"Précision live : <code>{acc}</code> ({hits}/{resolved})\n"
-        f"<i>Trade + apprend des erreurs · {source} · {_ts()}</i>"
+        f"<i>Prédit + apprend sur chaque bougie · {source} · {_ts()}</i>"
+    )
+
+
+def msg_prediction(
+    pred: Prediction,
+    *,
+    price: float,
+    bar_ts: str,
+) -> str:
+    emoji = {"UP": "📈", "DOWN": "📉", "FLAT": "➖"}.get(pred.label, "❔")
+    return (
+        f"{header(TAG_ANALYST, f'{emoji} Prédiction <b>{pred.label}</b>')}\n"
+        f"Confiance <code>{pred.confidence * 100:.0f}%</code> · "
+        f"<code>{pred.n_matches}</code> cas · dist <code>{pred.distance:.3f}</code>\n"
+        f"Fwd hist. <code>{pred.avg_fwd_pct:+.2f}%</code> · AAVE <code>{price:.3f}</code>\n"
+        f"{bar_ts} · {_ts()}"
     )
 
 

@@ -346,26 +346,64 @@ class AnalystEngine:
             vec,
             top_k=self.cfg.top_k,
             max_distance=self.cfg.max_distance,
+            always=self.cfg.continuous,
+            prefer_direction=self.cfg.continuous,
         )
         bar_ts = str(last_5m_ts)
         min_conf = self.effective_min_confidence()
         price = float(closed["close"].iloc[-1])
 
-        actionable = (
-            pred.actionable
-            and pred.n_matches >= self.cfg.min_matches
-            and pred.confidence >= min_conf
+        # Toujours enregistrer la prédiction pour apprendre (chaque bougie)
+        self.state.last_label = pred.label
+        self.state.last_pred_ts = bar_ts
+        if not any(p.get("bar_ts") == bar_ts for p in self.state.pending):
+            self.state.pending.append(
+                {
+                    "bar_ts": bar_ts,
+                    "direction": int(pred.direction),
+                    "price": price,
+                    "vec": vec.tolist(),
+                    "alerted": False,
+                }
+            )
+            if len(self.state.pending) > 400:
+                self.state.pending = self.state.pending[-400:]
+
+        logger.info(
+            "Analyst PRED %s conf=%.0f%% n=%d avg=%+.2f%% dist=%.3f",
+            pred.label,
+            pred.confidence * 100,
+            pred.n_matches,
+            pred.avg_fwd_pct,
+            pred.distance,
         )
 
-        if actionable:
-            since_alert = self._bars_since(closed, self.state.last_alert_bar) if self.state.last_alert_bar else None
+        if self.cfg.telegram_every_pred:
+            await self._send(
+                notif.msg_prediction(pred, price=price, bar_ts=bar_ts)
+            )
+
+        # En continu : trade dès qu'on a une direction (UP/DOWN)
+        can_trade = pred.direction != 0 and pred.n_matches >= self.cfg.min_matches
+        if not self.cfg.continuous:
+            can_trade = (
+                can_trade
+                and pred.confidence >= min_conf
+                and pred.n_matches >= max(self.cfg.min_matches, 1)
+            )
+
+        if can_trade:
+            since_alert = (
+                self._bars_since(closed, self.state.last_alert_bar)
+                if self.state.last_alert_bar
+                else None
+            )
             cooldown_ok = (
                 since_alert is None or since_alert >= self.cfg.alert_cooldown_bars
             )
 
-            # Flip : signal opposé → ferme puis rouvre
             pos = self.trader.state.position
-            if pos is not None and pred.direction == -pos.side and cooldown_ok:
+            if pos is not None and pred.direction == -pos.side:
                 trade = self.trader.close(price, "flip")
                 await self._send(notif.msg_close(trade, self.trader))
                 pos = None
@@ -390,40 +428,19 @@ class AnalystEngine:
                     )
                     self.state.alerts_today += 1
                     self.state.last_alert_bar = bar_ts
-                    self.state.last_label = pred.label
-                    self.state.last_pred_ts = bar_ts
-                    if not any(p.get("bar_ts") == bar_ts for p in self.state.pending):
-                        self.state.pending.append(
-                            {
-                                "bar_ts": bar_ts,
-                                "direction": int(pred.direction),
-                                "price": price,
-                                "vec": vec.tolist(),
-                                "alerted": True,
-                            }
-                        )
-                        if len(self.state.pending) > 200:
-                            self.state.pending = self.state.pending[-200:]
+                    # marque ce pending comme trade pour notif resolve
+                    for p in self.state.pending:
+                        if p.get("bar_ts") == bar_ts:
+                            p["alerted"] = True
+                            break
                     logger.info(
-                        "Analyst TRADE %s conf=%.0f%% n=%d (seuil conf=%.2f)",
+                        "Analyst TRADE %s conf=%.0f%% n=%d",
                         pred.label,
                         pred.confidence * 100,
                         pred.n_matches,
-                        min_conf,
                     )
                 except Exception as exc:
                     logger.error("Analyst open: %s", exc)
-            elif not cooldown_ok:
-                logger.debug("Analyst %s cooldown (%s)", pred.label, since_alert)
-        else:
-            logger.debug(
-                "Analyst skip %s conf=%.2f n=%d (besoin >=%.2f / %d)",
-                pred.label,
-                pred.confidence,
-                pred.n_matches,
-                min_conf,
-                self.cfg.min_matches,
-            )
 
         self.save_state()
 

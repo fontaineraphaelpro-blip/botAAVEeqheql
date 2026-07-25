@@ -161,13 +161,13 @@ class AnalystConfig:
     lookback: int = field(default_factory=lambda: _env_int("ANALYST_LOOKBACK", 24))
     horizon: int = field(default_factory=lambda: _env_int("ANALYST_HORIZON", 12))
     top_k: int = field(default_factory=lambda: _env_int("ANALYST_TOP_K", 40))
-    min_matches: int = field(default_factory=lambda: _env_int("ANALYST_MIN_MATCHES", 15))
+    min_matches: int = field(default_factory=lambda: _env_int("ANALYST_MIN_MATCHES", 1))
     min_confidence: float = field(
-        default_factory=lambda: _env_float("ANALYST_MIN_CONFIDENCE", 0.52)
+        default_factory=lambda: _env_float("ANALYST_MIN_CONFIDENCE", 0.0)
     )
     flat_pct: float = field(default_factory=lambda: _env_float("ANALYST_FLAT_PCT", 0.20))
     max_distance: float = field(
-        default_factory=lambda: _env_float("ANALYST_MAX_DISTANCE", 0.65)
+        default_factory=lambda: _env_float("ANALYST_MAX_DISTANCE", 1.0)
     )
     memory_file: str = field(
         default_factory=lambda: os.getenv(
@@ -201,10 +201,20 @@ class AnalystConfig:
     )
     stop_pct: float = field(default_factory=lambda: _env_float("ANALYST_STOP_PCT", 2.5))
     alert_cooldown_bars: int = field(
-        default_factory=lambda: _env_int("ANALYST_ALERT_COOLDOWN", 6)
+        default_factory=lambda: _env_int("ANALYST_ALERT_COOLDOWN", 1)
     )
     memory_save_every: int = field(
         default_factory=lambda: _env_int("ANALYST_MEMORY_SAVE_EVERY", 5)
+    )
+    # Analyse + prédiction à chaque bougie 5m ; paper dès qu'une direction sort
+    continuous: bool = field(
+        default_factory=lambda: os.getenv("ANALYST_CONTINUOUS", "true").lower()
+        in ("1", "true", "yes")
+    )
+    # Telegram à chaque prédiction (sinon seulement trades open/close)
+    telegram_every_pred: bool = field(
+        default_factory=lambda: os.getenv("ANALYST_TG_EVERY_PRED", "false").lower()
+        in ("1", "true", "yes")
     )
 
 

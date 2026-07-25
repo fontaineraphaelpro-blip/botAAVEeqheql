@@ -106,31 +106,44 @@ class PatternMemory:
         *,
         top_k: int = 40,
         max_distance: float = 0.55,
+        always: bool = False,
+        prefer_direction: bool = False,
     ) -> Prediction:
         if self.size == 0:
             return Prediction(0, 0.0, 0, 0.0, 1.0, "FLAT")
 
         v = np.asarray(vec, dtype=np.float32)
-        # cosine distance = 1 - dot (vecteurs L2-normalisés)
         sims = self.vectors @ v
         dists = 1.0 - sims
         k = min(top_k, self.size)
         idx = np.argpartition(dists, k - 1)[:k]
         idx = idx[np.argsort(dists[idx])]
 
-        # garder uniquement voisins assez proches
-        mask = dists[idx] <= max_distance
-        idx = idx[mask]
+        if not always:
+            mask = dists[idx] <= max_distance
+            idx = idx[mask]
         if len(idx) == 0:
             return Prediction(0, 0.0, 0, 0.0, float(dists.min()), "FLAT")
 
         labs = self.labels[idx]
         fwds = self.fwd_pct[idx]
-        # vote majoritaire (hors FLAT si possible)
-        counts = {1: int(np.sum(labs == 1)), -1: int(np.sum(labs == -1)), 0: int(np.sum(labs == 0))}
-        direction = max(counts, key=counts.get)
+        counts = {
+            1: int(np.sum(labs == 1)),
+            -1: int(np.sum(labs == -1)),
+            0: int(np.sum(labs == 0)),
+        }
+        if prefer_direction and (counts[1] + counts[-1]) > 0:
+            # Ignore FLAT pour toujours tenter une direction marché
+            direction = 1 if counts[1] >= counts[-1] else -1
+            if counts[1] == counts[-1]:
+                direction = 1 if float(np.mean(fwds)) >= 0 else -1
+            denom = counts[1] + counts[-1]
+            confidence = counts[direction] / denom if denom else 0.0
+        else:
+            direction = max(counts, key=counts.get)
+            n = len(idx)
+            confidence = counts[direction] / n if n else 0.0
         n = len(idx)
-        confidence = counts[direction] / n if n else 0.0
         return Prediction(
             direction=int(direction),
             confidence=float(confidence),
