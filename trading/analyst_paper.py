@@ -7,6 +7,14 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from trading.pnl_ledger import (
+    append_trade,
+    ledger_path,
+    load_trades,
+    merge_trades,
+    recover_balance,
+    rewrite_ledger,
+)
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -14,6 +22,15 @@ logger = setup_logger(__name__)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _from_dict(cls, raw: dict | None):
+    if not raw:
+        return None
+    from dataclasses import fields as dc_fields
+
+    allowed = {f.name for f in dc_fields(cls)}
+    return cls(**{k: v for k, v in raw.items() if k in allowed})
 
 
 @dataclass
@@ -83,34 +100,71 @@ class AnalystPaper:
         self.position_pct = position_pct
         self.fee_pct = fee_pct
         self.slippage_pct = slippage_pct
+        self.ledger_path = ledger_path(self.state_path)
         self.state = self._load()
 
     def _cost_rate(self) -> float:
         return (self.fee_pct + self.slippage_pct) / 100.0
 
+    def _hydrate_pnl(self, st: AnalystPaperState) -> AnalystPaperState:
+        ledger = load_trades(self.ledger_path, AnalystTrade)
+        merged = merge_trades(st.trades, ledger)
+        if len(merged) > len(st.trades):
+            logger.info(
+                "Analyst PnL récupéré depuis ledger (%d → %d)",
+                len(st.trades),
+                len(merged),
+            )
+        st.trades = merged
+        new_bal = recover_balance(st.start_balance, st.trades, st.balance)
+        if abs(new_bal - st.balance) > 1e-6:
+            logger.warning("Analyst solde reconstruit: %.2f → %.2f", st.balance, new_bal)
+            st.balance = new_bal
+        if len(st.trades) > len(ledger):
+            rewrite_ledger(self.ledger_path, st.trades)
+        return st
+
     def _load(self) -> AnalystPaperState:
         if self.state_path.exists():
             try:
                 raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-                pos = None
-                if raw.get("position"):
-                    pos = AnalystPosition(**raw["position"])
-                trades = [AnalystTrade(**t) for t in raw.get("trades", [])]
+                pos = _from_dict(AnalystPosition, raw.get("position"))
+                trades = [
+                    t
+                    for t in (_from_dict(AnalystTrade, x) for x in raw.get("trades", []))
+                    if t is not None
+                ]
                 st = AnalystPaperState(
                     balance=float(raw["balance"]),
                     start_balance=float(raw.get("start_balance", self.start_balance)),
                     position=pos,
                     trades=trades,
                 )
+                st = self._hydrate_pnl(st)
                 logger.info(
-                    "Analyst paper: solde %.2f, %d trades, pos=%s",
+                    "Analyst paper RECHARGÉ — solde %.2f, %d trades (PnL intact)",
                     st.balance,
-                    len(trades),
-                    pos.side_label if pos else "flat",
+                    len(st.trades),
                 )
                 return st
             except Exception as exc:
-                logger.error("Analyst paper illisible (%s) — reset", exc)
+                logger.error("Analyst paper illisible (%s) — tente ledger", exc)
+                ledger = load_trades(self.ledger_path, AnalystTrade)
+                if ledger:
+                    bal = recover_balance(self.start_balance, ledger, self.start_balance)
+                    return AnalystPaperState(
+                        balance=bal, start_balance=self.start_balance, trades=ledger
+                    )
+        ledger = load_trades(self.ledger_path, AnalystTrade)
+        if ledger:
+            bal = recover_balance(self.start_balance, ledger, self.start_balance)
+            logger.warning("Analyst: state manquant, ledger PnL restauré (%d)", len(ledger))
+            st = AnalystPaperState(
+                balance=bal, start_balance=self.start_balance, trades=ledger
+            )
+            self.state = st
+            self.save()
+            return st
         return AnalystPaperState(
             balance=self.start_balance, start_balance=self.start_balance
         )
@@ -201,6 +255,7 @@ class AnalystPaper:
         self.state.balance += pnl
         self.state.trades.append(trade)
         self.state.position = None
+        append_trade(self.ledger_path, trade)
         self.save()
         logger.info(
             "ANALYST CLOSE %s @ %.3f PnL %+.2f (%+.2f%%) solde %.2f [%s]",

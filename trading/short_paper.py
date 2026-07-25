@@ -9,6 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from config import ShortsConfig
+from trading.pnl_ledger import (
+    append_trade,
+    ledger_path,
+    load_trades,
+    merge_trades,
+    recover_balance,
+    rewrite_ledger,
+)
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -56,15 +64,43 @@ class ShortPortfolio:
     def __init__(self, cfg: ShortsConfig) -> None:
         self.cfg = cfg
         self.state_path = Path(cfg.state_file)
+        self.ledger_path = ledger_path(self.state_path)
         self.balance: float = cfg.start_balance
         self.start_balance: float = cfg.start_balance
         self.positions: dict[str, ShortPosition] = {}
         self.trades: list[ShortTrade] = []
         self._load()
 
+    def _hydrate_pnl(self) -> None:
+        ledger = load_trades(self.ledger_path, ShortTrade)
+        merged = merge_trades(self.trades, ledger)
+        if len(merged) > len(self.trades):
+            logger.info(
+                "Chasseur PnL récupéré depuis ledger (%d → %d)",
+                len(self.trades),
+                len(merged),
+            )
+        self.trades = merged
+        new_bal = recover_balance(self.start_balance, self.trades, self.balance)
+        if abs(new_bal - self.balance) > 1e-6:
+            logger.warning("Chasseur solde reconstruit: %.2f → %.2f", self.balance, new_bal)
+            self.balance = new_bal
+        if len(self.trades) > len(ledger):
+            rewrite_ledger(self.ledger_path, self.trades)
+
     # ------------------------------------------------------------ persistance
     def _load(self) -> None:
         if not self.state_path.exists():
+            ledger = load_trades(self.ledger_path, ShortTrade)
+            if ledger:
+                self.trades = ledger
+                self.balance = recover_balance(self.start_balance, ledger, self.start_balance)
+                logger.warning(
+                    "Chasseur: state manquant, ledger PnL restauré (%d trades)",
+                    len(ledger),
+                )
+                self.save()
+                return
             logger.warning(
                 "Chasseur: aucun fichier %s — nouvel état. "
                 "Volume Railway /app/data requis pour garder l'historique.",
@@ -85,15 +121,19 @@ class ShortPortfolio:
                 for t in (_from_dict(ShortTrade, x) for x in raw.get("trades", []))
                 if t is not None
             ]
+            self._hydrate_pnl()
             logger.info(
-                "Chasseur état RECHARGÉ depuis %s — %.2f USDT, %d pos, %d trades",
-                self.state_path,
+                "Chasseur état RECHARGÉ — %.2f USDT, %d pos, %d trades (PnL intact)",
                 self.balance,
                 len(self.positions),
                 len(self.trades),
             )
         except Exception as exc:
-            logger.error("État shorts illisible (%s) — conserve le fichier, pas de wipe", exc)
+            logger.error("État shorts illisible (%s) — tente ledger PnL", exc)
+            ledger = load_trades(self.ledger_path, ShortTrade)
+            if ledger:
+                self.trades = ledger
+                self.balance = recover_balance(self.start_balance, ledger, self.start_balance)
 
     def save(self) -> None:
         data = {
@@ -142,6 +182,7 @@ class ShortPortfolio:
             reason=reason, opened_at=pos.opened_at, closed_at=_now_iso(),
         )
         self.trades.append(trade)
+        append_trade(self.ledger_path, trade)
         self.save()
         logger.info(
             "COVER %s @ %.4f | PnL %+.2f USDT (%+.2f%%) | solde %.2f",

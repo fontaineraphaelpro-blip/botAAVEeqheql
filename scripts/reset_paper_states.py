@@ -113,11 +113,17 @@ def main() -> None:
     for key in selected:
         name, payload = STATES[key]
         path = DATA / name
+        ledger = path.with_name(path.stem + "_pnl.jsonl")
         # Backup avant wipe
         if path.exists():
             bak = path.with_suffix(path.suffix + f".bak-{now.replace(':', '').replace(' ', '-')}")
             bak.write_bytes(path.read_bytes())
             print(f"[BAK] {name} -> {bak.name}")
+        if ledger.exists():
+            lbak = ledger.with_suffix(ledger.suffix + f".bak-{now.replace(':', '').replace(' ', '-')}")
+            lbak.write_bytes(ledger.read_bytes())
+            ledger.unlink()
+            print(f"[BAK] ledger PnL -> {lbak.name}")
         data = {**payload, "updated_at": now, "reset_note": "PnL reset"}
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         print(f"[OK] {key} reset -> {path}")

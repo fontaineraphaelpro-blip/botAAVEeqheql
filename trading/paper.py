@@ -1,4 +1,4 @@
-"""Moteur de paper trading — portefeuille virtuel, PnL, persistance JSON."""
+"""Moteur de paper trading — portefeuille virtuel, PnL, persistance JSON + ledger."""
 
 from __future__ import annotations
 
@@ -9,6 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from config import TradingConfig
+from trading.pnl_ledger import (
+    append_trade,
+    ledger_path,
+    load_trades,
+    merge_trades,
+    recover_balance,
+    rewrite_ledger,
+)
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -79,7 +87,31 @@ class PaperTrader:
     def __init__(self, cfg: TradingConfig) -> None:
         self.cfg = cfg
         self.state_path = Path(cfg.state_file)
+        self.ledger_path = ledger_path(self.state_path)
         self.state = self._load()
+
+    def _hydrate_pnl(self, state: PaperState) -> PaperState:
+        """Fusionne le journal PnL append-only (source de vérité de l'historique)."""
+        ledger = load_trades(self.ledger_path, ClosedTrade)
+        merged = merge_trades(state.trades, ledger)
+        if len(merged) > len(state.trades):
+            logger.info(
+                "Tendance PnL récupéré depuis ledger (%d → %d trades)",
+                len(state.trades),
+                len(merged),
+            )
+        state.trades = merged
+        new_bal = recover_balance(state.start_balance, state.trades, state.balance)
+        if abs(new_bal - state.balance) > 1e-6:
+            logger.warning(
+                "Tendance solde reconstruit depuis PnL: %.2f → %.2f",
+                state.balance,
+                new_bal,
+            )
+            state.balance = new_bal
+        if len(state.trades) > len(ledger):
+            rewrite_ledger(self.ledger_path, state.trades)
+        return state
 
     def _load(self) -> PaperState:
         if self.state_path.exists():
@@ -96,49 +128,52 @@ class PaperTrader:
                     position=pos,
                     trades=trades,
                 )
+                state = self._hydrate_pnl(state)
                 logger.info(
-                    "Tendance état RECHARGÉ depuis %s — solde %.2f USDT, %d trades, pos=%s",
-                    self.state_path,
+                    "Tendance état RECHARGÉ — solde %.2f, %d trades (PnL intact), pos=%s",
                     state.balance,
-                    len(trades),
+                    len(state.trades),
                     pos.side_label if pos else "flat",
                 )
                 return state
             except Exception as exc:
-                # Ne pas écraser le fichier corrompu : backup puis fail soft
                 bak = self.state_path.with_suffix(".bak")
                 try:
                     bak.write_bytes(self.state_path.read_bytes())
-                    logger.error(
-                        "Tendance état illisible (%s) — backup %s, conserve le fichier",
-                        exc,
-                        bak,
-                    )
+                    logger.error("Tendance état illisible (%s) — backup + ledger", exc)
                 except Exception:
-                    logger.error("Tendance état illisible (%s) — reset forcé", exc)
-                    return PaperState(
-                        balance=self.cfg.start_balance,
-                        start_balance=self.cfg.start_balance,
+                    logger.error("Tendance état illisible (%s)", exc)
+                ledger = load_trades(self.ledger_path, ClosedTrade)
+                if ledger:
+                    start = self.cfg.start_balance
+                    bal = recover_balance(start, ledger, start)
+                    logger.warning(
+                        "Tendance restauré depuis ledger PnL: %d trades, solde %.2f",
+                        len(ledger),
+                        bal,
                     )
-                # tente de garder au moins balance si possible
-                try:
-                    raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-                    return PaperState(
-                        balance=float(raw.get("balance", self.cfg.start_balance)),
-                        start_balance=float(
-                            raw.get("start_balance", self.cfg.start_balance)
-                        ),
-                        position=None,
-                        trades=[],
-                    )
-                except Exception:
-                    return PaperState(
-                        balance=self.cfg.start_balance,
-                        start_balance=self.cfg.start_balance,
-                    )
+                    return PaperState(balance=bal, start_balance=start, trades=ledger)
+                return PaperState(
+                    balance=self.cfg.start_balance,
+                    start_balance=self.cfg.start_balance,
+                )
+
+        ledger = load_trades(self.ledger_path, ClosedTrade)
+        if ledger:
+            start = self.cfg.start_balance
+            bal = recover_balance(start, ledger, start)
+            logger.warning(
+                "Tendance: state manquant mais ledger PnL trouvé (%d trades) → restaure",
+                len(ledger),
+            )
+            state = PaperState(balance=bal, start_balance=start, trades=ledger)
+            self.state = state
+            self.save()
+            return state
+
         logger.warning(
-            "Tendance: aucun fichier %s — NOUVEL état (0 trade). "
-            "Sur Railway: monte un volume sur /app/data sinon l'historique est perdu à chaque deploy.",
+            "Tendance: aucun fichier %s — NOUVEL état. "
+            "Volume Railway /app/data requis pour garder le PnL.",
             self.state_path,
         )
         return PaperState(balance=self.cfg.start_balance, start_balance=self.cfg.start_balance)
@@ -151,6 +186,7 @@ class PaperTrader:
             "trades": [asdict(t) for t in self.state.trades],
             "bot": "AAVE Tendance",
             "updated_at": _now_iso(),
+            "pnl_ledger": str(self.ledger_path),
         }
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(".tmp")
@@ -207,9 +243,10 @@ class PaperTrader:
         self.state.balance += pnl
         self.state.trades.append(trade)
         self.state.position = None
+        append_trade(self.ledger_path, trade)
         self.save()
         logger.info(
-            "CLOSE %s @ %.3f | PnL %+.2f USDT (%+.2f%%) | solde %.2f",
+            "CLOSE %s @ %.3f | PnL %+.2f (%+.2f%%) | solde %.2f | ledger OK",
             trade.side, price, pnl, trade.pnl_pct, self.state.balance,
         )
         return trade
