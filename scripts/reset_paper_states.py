@@ -6,11 +6,16 @@ Usage: python scripts/reset_paper_states.py
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = ROOT / "data"
+sys.path.insert(0, str(ROOT))
+
+from config import data_dir
+
+DATA = data_dir()
 
 STATES = {
     "tendance_state.json": {
@@ -52,7 +57,7 @@ def main() -> None:
         path = DATA / name
         data = {**payload, "updated_at": now, "reset_note": "PnL reset"}
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        print(f"[OK] {name} -> solde 1000, 0 trade")
+        print(f"[OK] {name} -> solde 1000, 0 trade ({path})")
 
     for name in LEGACY:
         path = DATA / name
@@ -60,7 +65,7 @@ def main() -> None:
             path.unlink()
             print(f"[DEL] ancien {name}")
 
-    print("Reset termine — redemarre les bots / redeploy Railway.")
+    print(f"Reset termine dans {DATA} — redemarre / redeploy Railway.")
 
 
 if __name__ == "__main__":
