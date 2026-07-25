@@ -10,6 +10,10 @@ TAG_TENDANCE = "TENDANCE"
 BOT_CHASSEUR = "Chasseur Shorts"
 TAG_CHASSEUR = "CHASSEUR"
 
+# Analyste : mémoire de motifs AAVE → prédictions (pas de trade encore)
+BOT_ANALYST = "AAVE Analyst"
+TAG_ANALYST = "ANALYST"
+
 
 def header(tag: str, title: str) -> str:
     """En-tête commun pour séparer clairement les bots."""

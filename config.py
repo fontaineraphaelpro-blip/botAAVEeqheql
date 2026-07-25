@@ -155,6 +155,36 @@ class ShortsConfig:
 
 
 @dataclass(frozen=True)
+class AnalystConfig:
+    """Mémoire de motifs AAVE 5m — prédictions uniquement si matches historiques."""
+
+    lookback: int = field(default_factory=lambda: _env_int("ANALYST_LOOKBACK", 24))
+    horizon: int = field(default_factory=lambda: _env_int("ANALYST_HORIZON", 12))
+    top_k: int = field(default_factory=lambda: _env_int("ANALYST_TOP_K", 40))
+    min_matches: int = field(default_factory=lambda: _env_int("ANALYST_MIN_MATCHES", 25))
+    min_confidence: float = field(
+        default_factory=lambda: _env_float("ANALYST_MIN_CONFIDENCE", 0.58)
+    )
+    flat_pct: float = field(default_factory=lambda: _env_float("ANALYST_FLAT_PCT", 0.20))
+    max_distance: float = field(
+        default_factory=lambda: _env_float("ANALYST_MAX_DISTANCE", 0.55)
+    )
+    memory_file: str = field(
+        default_factory=lambda: os.getenv(
+            "ANALYST_MEMORY_FILE", "models/analyst_memory.npz"
+        )
+    )
+    state_file: str = field(
+        default_factory=lambda: os.getenv(
+            "ANALYST_STATE_FILE", "data/analyst_state.json"
+        )
+    )
+    alert_cooldown_bars: int = field(
+        default_factory=lambda: _env_int("ANALYST_ALERT_COOLDOWN", 6)
+    )
+
+
+@dataclass(frozen=True)
 class TelegramConfig:
     token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
     chat_id: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
@@ -166,6 +196,7 @@ class AppConfig:
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     shorts: ShortsConfig = field(default_factory=ShortsConfig)
+    analyst: AnalystConfig = field(default_factory=AnalystConfig)
     pivot: PivotConfig = field(default_factory=PivotConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

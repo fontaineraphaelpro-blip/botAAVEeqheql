@@ -1,8 +1,9 @@
-"""Lance les 2 bots paper dans un seul process (Railway).
+"""Lance les 3 bots paper dans un seul process (Railway).
 
 Noms :
 - AAVE Tendance — EMA flip 30m + filtres
 - Chasseur Shorts — multi-alts si BTC bear
+- AAVE Analyst — mémoire de motifs → prédictions Telegram
 
 1 source KuCoin AAVE 5m + 1 rapport quotidien unifié.
 """
@@ -17,6 +18,7 @@ from config import get_config
 from notifier.bot import TelegramNotifier
 from scanner.market_data import MarketDataService
 from trading import notifications as tendance_notif
+from trading.analyst_engine import AnalystEngine
 from trading.daily_fleet import msg_fleet_startup, msg_unified_daily
 from trading.engine import SYMBOL as AAVE
 from trading.engine import TF_5M, TradingEngine
@@ -38,7 +40,7 @@ def _seconds_until_next_2h(buffer_sec: float) -> float:
 
 
 class Fleet:
-    """État partagé des 2 bots + rapport quotidien unique."""
+    """État partagé des 3 bots + rapport quotidien unique."""
 
     def __init__(self) -> None:
         self.config = get_config()
@@ -48,6 +50,7 @@ class Fleet:
             self.config, self.market, self.telegram, daily_reports=False
         )
         self.chasseur = ShortHunterEngine(self.config, self.telegram)
+        self.analyst = AnalystEngine(self.config, self.market, self.telegram)
         self._last_report_date: str | None = None
         self._report_lock = asyncio.Lock()
 
@@ -71,6 +74,7 @@ class Fleet:
                     msg_unified_daily(
                         tendance=self.tendance.trader,
                         chasseur_engine=self.chasseur,
+                        analyst_engine=self.analyst,
                         aave_price=price,
                     )
                 )
@@ -83,6 +87,9 @@ class Fleet:
         await retry_async(self.market.start, attempts=8, label="market")
         await retry_async(self.telegram.start, attempts=4, label="telegram")
         await retry_async(self.tendance.warmup, attempts=6, label="tendance-warmup")
+
+        self.analyst.load_state()
+        self.analyst.load_memory()
 
         async def _hist() -> object:
             return await self.market.load_history(AAVE, TF_5M)
@@ -98,16 +105,19 @@ class Fleet:
                 )
             )
             await self.telegram.send_raw(self.chasseur.startup_message())
+            await self.telegram.send_raw(self.analyst.startup_message(src))
         except Exception as exc:
             logger.error("Telegram démarrage flotte: %s", exc)
 
         await self.tendance.on_new_5m_close()
+        await self.analyst.on_new_5m_close()
         await retry_async(self.chasseur.run_cycle, attempts=3, label="chasseur-cycle")
         await self.maybe_daily()
 
         logger.info(
-            "Flotte active — [TENDANCE] KuCoin 5m→%dmin | [CHASSEUR] 2h",
+            "Flotte active — [TENDANCE] %dmin | [CHASSEUR] 2h | [ANALYST] %d motifs",
             self.config.trading.signal_tf_min,
+            self.analyst.memory.size if self.analyst.memory else 0,
         )
 
     async def aave_loop(self) -> None:
@@ -116,6 +126,7 @@ class Fleet:
             await asyncio.sleep(wait)
             await self.market.refresh_if_due(AAVE, TF_5M)
             await self.tendance.on_new_5m_close()
+            await self.analyst.on_new_5m_close()
             await self.maybe_daily()
 
     async def chasseur_loop(self) -> None:
@@ -134,6 +145,10 @@ class Fleet:
             pass
         try:
             await self.chasseur.close()
+        except Exception:
+            pass
+        try:
+            self.analyst.save_state()
         except Exception:
             pass
 

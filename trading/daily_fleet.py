@@ -1,11 +1,19 @@
-"""Rapport quotidien unique — Tendance + Chasseur."""
+"""Rapport quotidien unique — Tendance + Chasseur + Analyst."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 from trading import notifications as tendance_notif
-from trading.bot_ids import BOT_CHASSEUR, BOT_TENDANCE, TAG_CHASSEUR, TAG_TENDANCE
+from trading.analyst_notifications import section_daily as section_analyst
+from trading.bot_ids import (
+    BOT_ANALYST,
+    BOT_CHASSEUR,
+    BOT_TENDANCE,
+    TAG_ANALYST,
+    TAG_CHASSEUR,
+    TAG_TENDANCE,
+)
 from trading.paper import PaperTrader
 
 
@@ -42,6 +50,7 @@ def msg_unified_daily(
     *,
     tendance: PaperTrader,
     chasseur_engine,
+    analyst_engine,
     aave_price: float,
 ) -> str:
     eq_t = tendance.state.equity(aave_price)
@@ -49,13 +58,15 @@ def msg_unified_daily(
     total = eq_t + eq_s
     start = tendance.state.start_balance + chasseur_engine.portfolio.start_balance
     return (
-        f"📊 <b>Rapport quotidien — 2 bots</b>\n"
-        f"Total ≈ <code>{total:.2f}</code> USDT "
+        f"📊 <b>Rapport quotidien — 3 bots</b>\n"
+        f"Paper ≈ <code>{total:.2f}</code> USDT "
         f"({_pct((total / start - 1) * 100 if start else 0)})\n"
         f"────────────────\n"
         f"{tendance_notif.section_daily(tendance, aave_price)}\n"
         f"────────────────\n"
         f"{section_chasseur(chasseur_engine)}\n"
+        f"────────────────\n"
+        f"{section_analyst(analyst_engine)}\n"
         f"────────────────\n"
         f"AAVE <code>{aave_price:.3f}</code> · {_ts()}"
     )
@@ -66,6 +77,7 @@ def msg_fleet_startup(source: str) -> str:
         f"🤖 <b>Flotte paper démarrée</b>\n"
         f"• <b>[{TAG_TENDANCE}]</b> {BOT_TENDANCE} — EMA flip 30m + filtres\n"
         f"• <b>[{TAG_CHASSEUR}]</b> {BOT_CHASSEUR} — shorts alts si BTC bear\n"
+        f"• <b>[{TAG_ANALYST}]</b> {BOT_ANALYST} — motifs AAVE → prédictions\n"
         f"1 rapport/jour à 07:00 UTC · source AAVE : <code>{source}</code>\n"
         f"{_ts()}"
     )
