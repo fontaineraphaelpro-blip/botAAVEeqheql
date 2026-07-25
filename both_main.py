@@ -14,7 +14,7 @@ import asyncio
 import traceback
 from datetime import datetime, timezone
 
-from config import get_config
+from config import data_dir, get_config
 from notifier.bot import TelegramNotifier
 from scanner.market_data import MarketDataService
 from trading import notifications as tendance_notif
@@ -84,6 +84,17 @@ class Fleet:
                 self._last_report_date = None
 
     async def bootstrap(self) -> None:
+        persist = data_dir()
+        has_vol = bool(
+            __import__("os").getenv("RAILWAY_VOLUME_MOUNT_PATH")
+            or __import__("os").getenv("DATA_DIR")
+        )
+        logger.info(
+            "Persistance: %s (%s)",
+            persist,
+            "volume/DATA_DIR" if has_vol else "local ./data — attache un volume Railway!",
+        )
+
         await retry_async(self.market.start, attempts=8, label="market")
         await retry_async(self.telegram.start, attempts=4, label="telegram")
         await retry_async(self.tendance.warmup, attempts=6, label="tendance-warmup")

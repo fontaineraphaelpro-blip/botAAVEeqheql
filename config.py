@@ -11,6 +11,23 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
+def data_dir() -> Path:
+    """Dossier persistant : volume Railway, sinon DATA_DIR, sinon ./data."""
+    raw = (
+        os.getenv("DATA_DIR")
+        or os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+        or "data"
+    )
+    path = Path(raw)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def data_path(*parts: str) -> str:
+    """Chemin fichier sous le dossier persistant."""
+    return str(data_dir().joinpath(*parts))
+
+
 def _default_exchange() -> str:
     """Par defaut KuCoin (aligne TradingView KUCOIN:AAVEUSDT)."""
     if os.getenv("EXCHANGE"):
@@ -107,7 +124,7 @@ class TradingConfig:
     fee_pct: float = field(default_factory=lambda: _env_float("FEE_PCT", 0.05))
     slippage_pct: float = field(default_factory=lambda: _env_float("SLIPPAGE_PCT", 0.03))
     state_file: str = field(
-        default_factory=lambda: os.getenv("PAPER_STATE_FILE", "data/tendance_state.json")
+        default_factory=lambda: os.getenv("PAPER_STATE_FILE") or data_path("tendance_state.json")
     )
     daily_report_hour_utc: int = field(
         default_factory=lambda: _env_int("DAILY_REPORT_HOUR_UTC", 7)
@@ -148,7 +165,8 @@ class ShortsConfig:
     slippage_pct: float = field(default_factory=lambda: _env_float("SHORTS_SLIPPAGE_PCT", 0.05))
     funding_pct_8h: float = field(default_factory=lambda: _env_float("SHORTS_FUNDING_PCT_8H", 0.01))
     state_file: str = field(
-        default_factory=lambda: os.getenv("SHORTS_STATE_FILE", "data/chasseur_state.json")
+        default_factory=lambda: os.getenv("SHORTS_STATE_FILE")
+        or data_path("chasseur_state.json")
     )
     universe: tuple[str, ...] = SHORT_UNIVERSE
     candle_close_buffer_sec: float = 45.0
@@ -175,19 +193,16 @@ class AnalystConfig:
         )
     )
     runtime_memory_file: str = field(
-        default_factory=lambda: os.getenv(
-            "ANALYST_RUNTIME_MEMORY", "data/analyst_memory.npz"
-        )
+        default_factory=lambda: os.getenv("ANALYST_RUNTIME_MEMORY")
+        or data_path("analyst_memory.npz")
     )
     state_file: str = field(
-        default_factory=lambda: os.getenv(
-            "ANALYST_STATE_FILE", "data/analyst_state.json"
-        )
+        default_factory=lambda: os.getenv("ANALYST_STATE_FILE")
+        or data_path("analyst_state.json")
     )
     paper_state_file: str = field(
-        default_factory=lambda: os.getenv(
-            "ANALYST_PAPER_STATE", "data/analyst_paper.json"
-        )
+        default_factory=lambda: os.getenv("ANALYST_PAPER_STATE")
+        or data_path("analyst_paper.json")
     )
     start_balance: float = field(
         default_factory=lambda: _env_float("ANALYST_START_BALANCE", 1000.0)
@@ -207,14 +222,12 @@ class AnalystConfig:
         default_factory=lambda: _env_int("ANALYST_MEMORY_SAVE_EVERY", 5)
     )
     correlations_file: str = field(
-        default_factory=lambda: os.getenv(
-            "ANALYST_CORR_FILE", "data/analyst_correlations.json"
-        )
+        default_factory=lambda: os.getenv("ANALYST_CORR_FILE")
+        or data_path("analyst_correlations.json")
     )
     learn_log_file: str = field(
-        default_factory=lambda: os.getenv(
-            "ANALYST_LEARN_LOG", "data/analyst_learn_log.jsonl"
-        )
+        default_factory=lambda: os.getenv("ANALYST_LEARN_LOG")
+        or data_path("analyst_learn_log.jsonl")
     )
     # Analyse + prédiction à chaque bougie 5m ; paper dès qu'une direction sort
     continuous: bool = field(
