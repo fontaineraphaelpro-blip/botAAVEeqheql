@@ -206,6 +206,11 @@ class AnalystConfig:
     memory_save_every: int = field(
         default_factory=lambda: _env_int("ANALYST_MEMORY_SAVE_EVERY", 5)
     )
+    correlations_file: str = field(
+        default_factory=lambda: os.getenv(
+            "ANALYST_CORR_FILE", "data/analyst_correlations.json"
+        )
+    )
     # Analyse + prédiction à chaque bougie 5m ; paper dès qu'une direction sort
     continuous: bool = field(
         default_factory=lambda: os.getenv("ANALYST_CONTINUOUS", "true").lower()

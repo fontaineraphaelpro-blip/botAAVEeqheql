@@ -38,8 +38,9 @@ def msg_startup(
     )
     return (
         f"{header(TAG_ANALYST, f'<b>{BOT_ANALYST}</b> démarré')}\n"
-        f"Paper continu · mémoire <code>{memory_size}</code> motifs · "
-        f"analyse chaque 5m · horizon {horizon}×5m (~{horizon * 5} min)\n"
+        f"Paper continu · RSI/MACD/BB/ATR/Stoch/EMA/ER + corrélations\n"
+        f"Mémoire <code>{memory_size}</code> · analyse chaque 5m · "
+        f"horizon ~{horizon * 5} min\n"
         f"Solde <code>{s['balance']:.2f}</code> · {pos_line}\n"
         f"Précision live : <code>{acc}</code> ({hits}/{resolved})\n"
         f"<i>Prédit + apprend sur chaque bougie · {source} · {_ts()}</i>"
@@ -115,10 +116,13 @@ def section_daily(engine) -> str:
     last = s.get("last_label") or "—"
     acc = s["accuracy_pct"]
     acc_txt = f"{acc:.0f}%" if s["resolved"] else "n/a"
+    edges = s.get("corr_edges") or []
+    corr_line = (" · corr: " + ", ".join(edges[:2])) if edges else ""
     return (
         f"<b>[{TAG_ANALYST}]</b> {BOT_ANALYST}\n"
         f"Équité <code>{s['balance']:.2f}</code> ({_pct(s['pnl_pct'])}) · "
         f"{s['n_trades']}t WR {s['winrate']:.0f}% · "
         f"précision <code>{acc_txt}</code> · "
         f"mémoire <code>{s['memory_size']}</code> · dernier {last}"
+        f"{corr_line}"
     )

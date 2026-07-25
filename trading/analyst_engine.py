@@ -14,13 +14,16 @@ import pandas as pd
 from config import AppConfig
 from scanner.market_data import MarketDataService
 from trading import analyst_notifications as notif
+from trading.analyst_correlations import CorrelationBook
 from trading.analyst_features import (
     FeatureParams,
     encode_window,
     forward_return_pct,
     label_from_return,
+    min_bars,
+    snapshot_indicators,
 )
-from trading.analyst_memory import PatternMemory
+from trading.analyst_memory import PatternMemory, Prediction
 from trading.analyst_paper import AnalystPaper
 from utils.logger import setup_logger
 
@@ -87,6 +90,7 @@ class AnalystEngine:
             flat_pct=self.cfg.flat_pct,
         )
         self.memory: PatternMemory | None = None
+        self.corr = CorrelationBook()
         self.state = AnalystState()
         self.trader = AnalystPaper(
             state_file=self.cfg.paper_state_file,
@@ -99,6 +103,7 @@ class AnalystEngine:
         self._state_path = Path(self.cfg.state_file)
         self._runtime_mem = Path(self.cfg.runtime_memory_file)
         self._seed_mem = Path(self.cfg.memory_file)
+        self._corr_path = Path(self.cfg.correlations_file)
 
     # ------------------------------------------------------------------ memory
     def load_memory(self) -> None:
@@ -133,6 +138,16 @@ class AnalystEngine:
             self.memory.size,
             path,
         )
+        self.corr = CorrelationBook.load(self._corr_path)
+        if not self.corr.tables:
+            seed = Path("models/analyst_correlations.json")
+            if seed.exists():
+                self.corr = CorrelationBook.load(seed)
+                self.save_correlations()
+        logger.info("Analyst corrélations: %d indicateurs suivis", len(self.corr.tables))
+
+    def save_correlations(self) -> None:
+        self.corr.save(self._corr_path)
 
     def save_memory(self, *, force: bool = False) -> None:
         if self.memory is None:
@@ -191,6 +206,7 @@ class AnalystEngine:
             "pnl_pct": ps["pnl_pct"],
             "n_trades": ps["n"],
             "winrate": ps["winrate"],
+            "corr_edges": self.corr.top_edges(3),
         }
 
     def startup_message(self, source: str) -> str:
@@ -263,6 +279,9 @@ class AnalystEngine:
             if hit:
                 self.state.hits += 1
             self._learn(p.get("vec"), actual, fwd, hit=hit)
+            snap = p.get("snapshot")
+            if isinstance(snap, dict):
+                self.corr.observe(snap, actual)
             if p.get("alerted") and expected != 0:
                 msgs.append(
                     notif.msg_resolve(
@@ -283,6 +302,7 @@ class AnalystEngine:
             )
         self.state.pending = still[-150:]
         self.save_memory()
+        self.save_correlations()
         return msgs
 
     def _bars_since(self, closed: pd.DataFrame, bar_ts: str) -> int | None:
@@ -329,7 +349,7 @@ class AnalystEngine:
 
         await self._manage_position(closed)
 
-        need = self.params.lookback
+        need = min_bars(self.params)
         if len(closed) < need:
             self.save_state()
             return
@@ -337,6 +357,7 @@ class AnalystEngine:
         window = closed.iloc[-need:]
         try:
             vec = encode_window(window, self.params)
+            snap = snapshot_indicators(window, self.params)
         except ValueError as exc:
             logger.debug("Analyst encode: %s", exc)
             self.save_state()
@@ -349,6 +370,30 @@ class AnalystEngine:
             always=self.cfg.continuous,
             prefer_direction=self.cfg.continuous,
         )
+        # Blend avec corrélations historiques indicateur → direction
+        corr_dir, corr_conf, corr_why = self.corr.direction_bias(snap)
+        if corr_dir != 0 and corr_conf >= 0.15:
+            if pred.direction == corr_dir:
+                pred = Prediction(
+                    direction=pred.direction,
+                    confidence=min(1.0, pred.confidence * 0.7 + corr_conf * 0.3),
+                    n_matches=pred.n_matches,
+                    avg_fwd_pct=pred.avg_fwd_pct,
+                    distance=pred.distance,
+                    label=pred.label,
+                )
+            elif pred.n_matches < 10 or pred.confidence < 0.55:
+                from trading.analyst_features import DIR_LABEL
+
+                pred = Prediction(
+                    direction=corr_dir,
+                    confidence=corr_conf,
+                    n_matches=pred.n_matches,
+                    avg_fwd_pct=pred.avg_fwd_pct,
+                    distance=pred.distance,
+                    label=DIR_LABEL[corr_dir],
+                )
+
         bar_ts = str(last_5m_ts)
         min_conf = self.effective_min_confidence()
         price = float(closed["close"].iloc[-1])
@@ -363,19 +408,22 @@ class AnalystEngine:
                     "direction": int(pred.direction),
                     "price": price,
                     "vec": vec.tolist(),
+                    "snapshot": snap,
                     "alerted": False,
+                    "corr_why": corr_why,
                 }
             )
             if len(self.state.pending) > 400:
                 self.state.pending = self.state.pending[-400:]
 
         logger.info(
-            "Analyst PRED %s conf=%.0f%% n=%d avg=%+.2f%% dist=%.3f",
+            "Analyst PRED %s conf=%.0f%% n=%d avg=%+.2f%% corr=%s %s",
             pred.label,
             pred.confidence * 100,
             pred.n_matches,
             pred.avg_fwd_pct,
-            pred.distance,
+            corr_dir,
+            ",".join(corr_why[:2]) if corr_why else "-",
         )
 
         if self.cfg.telegram_every_pred:
@@ -446,5 +494,6 @@ class AnalystEngine:
 
     def shutdown(self) -> None:
         self.save_memory(force=True)
+        self.save_correlations()
         self.save_state()
         self.trader.save()

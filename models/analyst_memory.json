@@ -1,6 +1,6 @@
 {
-  "size": 35055,
-  "dim": 74,
+  "size": 35029,
+  "dim": 203,
   "lookback": 24,
   "horizon": 12,
   "flat_pct": 0.2,

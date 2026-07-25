@@ -12,10 +12,12 @@ import pandas as pd
 from trading.analyst_features import (
     DIR_LABEL,
     FeatureParams,
-    encode_window,
+    encode_from_enriched,
+    enrich,
     feature_dim,
     forward_return_pct,
     label_from_return,
+    min_bars,
 )
 
 
@@ -66,20 +68,21 @@ class PatternMemory:
         stride: int = 3,
         source: str = "",
     ) -> PatternMemory:
-        need = params.lookback + params.horizon
+        need = min_bars(params) + params.horizon
         if len(df) < need + 10:
             raise ValueError(f"historique trop court ({len(df)} < {need + 10})")
 
-        closes = df["close"].to_numpy(dtype=np.float64)
+        en = enrich(df)
+        closes = en["close"].to_numpy(dtype=np.float64)
         vectors: list[np.ndarray] = []
         labels: list[int] = []
         fwds: list[float] = []
 
-        last_i = len(df) - params.horizon - 1
-        for i in range(params.lookback - 1, last_i + 1, max(1, stride)):
-            window = df.iloc[i - params.lookback + 1 : i + 1]
+        last_i = len(en) - params.horizon - 1
+        start_i = min_bars(params) - 1
+        for i in range(start_i, last_i + 1, max(1, stride)):
             try:
-                vec = encode_window(window, params)
+                vec = encode_from_enriched(en, i, params)
             except ValueError:
                 continue
             fwd = forward_return_pct(closes, i, params.horizon)
