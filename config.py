@@ -211,6 +211,11 @@ class AnalystConfig:
             "ANALYST_CORR_FILE", "data/analyst_correlations.json"
         )
     )
+    learn_log_file: str = field(
+        default_factory=lambda: os.getenv(
+            "ANALYST_LEARN_LOG", "data/analyst_learn_log.jsonl"
+        )
+    )
     # Analyse + prédiction à chaque bougie 5m ; paper dès qu'une direction sort
     continuous: bool = field(
         default_factory=lambda: os.getenv("ANALYST_CONTINUOUS", "true").lower()

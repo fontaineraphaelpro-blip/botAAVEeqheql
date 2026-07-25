@@ -123,6 +123,7 @@ def section_daily(engine) -> str:
         f"Équité <code>{s['balance']:.2f}</code> ({_pct(s['pnl_pct'])}) · "
         f"{s['n_trades']}t WR {s['winrate']:.0f}% · "
         f"précision <code>{acc_txt}</code> · "
-        f"mémoire <code>{s['memory_size']}</code> · dernier {last}"
+        f"mémoire <code>{s['memory_size']}</code> · "
+        f"leçons <code>{s.get('learn_events', 0)}</code> · dernier {last}"
         f"{corr_line}"
     )

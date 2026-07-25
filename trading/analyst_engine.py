@@ -43,6 +43,7 @@ class AnalystState:
     last_label: str = ""
     last_pred_ts: str = ""
     learns_since_save: int = 0
+    learn_events: int = 0
     pending: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -55,6 +56,7 @@ class AnalystState:
             "last_label": self.last_label,
             "last_pred_ts": self.last_pred_ts,
             "learns_since_save": self.learns_since_save,
+            "learn_events": self.learn_events,
             "pending": self.pending,
         }
 
@@ -69,6 +71,7 @@ class AnalystState:
             last_label=str(d.get("last_label", "")),
             last_pred_ts=str(d.get("last_pred_ts", "")),
             learns_since_save=int(d.get("learns_since_save", 0)),
+            learn_events=int(d.get("learn_events", 0)),
             pending=list(d.get("pending") or []),
         )
 
@@ -104,6 +107,7 @@ class AnalystEngine:
         self._runtime_mem = Path(self.cfg.runtime_memory_file)
         self._seed_mem = Path(self.cfg.memory_file)
         self._corr_path = Path(self.cfg.correlations_file)
+        self._learn_log = Path(self.cfg.learn_log_file)
 
     # ------------------------------------------------------------------ memory
     def load_memory(self) -> None:
@@ -207,6 +211,7 @@ class AnalystEngine:
             "n_trades": ps["n"],
             "winrate": ps["winrate"],
             "corr_edges": self.corr.top_edges(3),
+            "learn_events": self.state.learn_events,
         }
 
     def startup_message(self, source: str) -> str:
@@ -235,6 +240,19 @@ class AnalystEngine:
     def _ts_index(self, closed: pd.DataFrame) -> dict[str, int]:
         return {str(t): i for i, t in enumerate(closed.index)}
 
+    def _append_learn_log(self, entry: dict[str, Any]) -> None:
+        """Trace durable de chaque apprentissage (1 ligne JSON = 1 leçon)."""
+        self._learn_log.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            **entry,
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "memory_size": self.memory.size if self.memory else 0,
+            "hits": self.state.hits,
+            "resolved": self.state.resolved,
+        }
+        with self._learn_log.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
     def _learn(
         self,
         vec: list[float] | None,
@@ -242,6 +260,8 @@ class AnalystEngine:
         fwd: float,
         *,
         hit: bool,
+        expected: int = 0,
+        bar_ts: str = "",
     ) -> None:
         if self.memory is None or vec is None:
             return
@@ -251,6 +271,18 @@ class AnalystEngine:
             for _ in range(times):
                 self.memory.append_online(vec, actual, fwd)
             self.state.learns_since_save += times
+            self.state.learn_events += 1
+            self._append_learn_log(
+                {
+                    "bar_ts": bar_ts,
+                    "expected": expected,
+                    "actual": actual,
+                    "fwd_pct": round(fwd, 4),
+                    "hit": hit,
+                    "weight": times,
+                    "lesson": "reinforce" if hit else "correct_error",
+                }
+            )
         except Exception as exc:
             logger.debug("learn: %s", exc)
 
@@ -278,7 +310,14 @@ class AnalystEngine:
             self.state.resolved += 1
             if hit:
                 self.state.hits += 1
-            self._learn(p.get("vec"), actual, fwd, hit=hit)
+            self._learn(
+                p.get("vec"),
+                actual,
+                fwd,
+                hit=hit,
+                expected=expected,
+                bar_ts=key,
+            )
             snap = p.get("snapshot")
             if isinstance(snap, dict):
                 self.corr.observe(snap, actual)
@@ -301,7 +340,8 @@ class AnalystEngine:
                 self.state.resolved,
             )
         self.state.pending = still[-150:]
-        self.save_memory()
+        # Sauvegarde systématique après chaque lot d'apprentissage
+        self.save_memory(force=True)
         self.save_correlations()
         return msgs
 
