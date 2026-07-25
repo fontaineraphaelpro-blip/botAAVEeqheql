@@ -102,8 +102,8 @@ class ShortPortfolio:
                 self.save()
                 return
             logger.warning(
-                "Chasseur: aucun fichier %s — nouvel état. "
-                "Volume Railway /app/data requis pour garder l'historique.",
+                "Chasseur: aucun fichier %s — premier démarrage. "
+                "L'historique sera conservé sur ce volume.",
                 self.state_path,
             )
             return

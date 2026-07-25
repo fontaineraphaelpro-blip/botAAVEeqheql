@@ -172,8 +172,8 @@ class PaperTrader:
             return state
 
         logger.warning(
-            "Tendance: aucun fichier %s — NOUVEL état. "
-            "Volume Railway /app/data requis pour garder le PnL.",
+            "Tendance: aucun fichier %s — premier démarrage (0 trade, solde initial). "
+            "Les prochains trades seront conservés sur ce volume.",
             self.state_path,
         )
         return PaperState(balance=self.cfg.start_balance, start_balance=self.cfg.start_balance)
