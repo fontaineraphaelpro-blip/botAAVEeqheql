@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from config import ShortsConfig
 from utils.logger import setup_logger
@@ -15,6 +16,13 @@ logger = setup_logger(__name__)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _from_dict(cls, raw: dict[str, Any] | None):
+    if not raw:
+        return None
+    allowed = {f.name for f in fields(cls)}
+    return cls(**{k: v for k, v in raw.items() if k in allowed})
 
 
 @dataclass
@@ -57,21 +65,35 @@ class ShortPortfolio:
     # ------------------------------------------------------------ persistance
     def _load(self) -> None:
         if not self.state_path.exists():
+            logger.warning(
+                "Chasseur: aucun fichier %s — nouvel état. "
+                "Volume Railway /app/data requis pour garder l'historique.",
+                self.state_path,
+            )
             return
         try:
             raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-            self.balance = raw["balance"]
-            self.start_balance = raw.get("start_balance", self.cfg.start_balance)
-            self.positions = {
-                s: ShortPosition(**p) for s, p in raw.get("positions", {}).items()
-            }
-            self.trades = [ShortTrade(**t) for t in raw.get("trades", [])]
+            self.balance = float(raw["balance"])
+            self.start_balance = float(raw.get("start_balance", self.cfg.start_balance))
+            self.positions = {}
+            for s, p in raw.get("positions", {}).items():
+                pos = _from_dict(ShortPosition, p)
+                if pos is not None:
+                    self.positions[s] = pos
+            self.trades = [
+                t
+                for t in (_from_dict(ShortTrade, x) for x in raw.get("trades", []))
+                if t is not None
+            ]
             logger.info(
-                "État shorts rechargé — %.2f USDT, %d positions, %d trades",
-                self.balance, len(self.positions), len(self.trades),
+                "Chasseur état RECHARGÉ depuis %s — %.2f USDT, %d pos, %d trades",
+                self.state_path,
+                self.balance,
+                len(self.positions),
+                len(self.trades),
             )
         except Exception as exc:
-            logger.error("État shorts illisible (%s) — reset", exc)
+            logger.error("État shorts illisible (%s) — conserve le fichier, pas de wipe", exc)
 
     def save(self) -> None:
         data = {

@@ -84,15 +84,20 @@ class Fleet:
                 self._last_report_date = None
 
     async def bootstrap(self) -> None:
+        import os
+
         persist = data_dir()
         has_vol = bool(
-            __import__("os").getenv("RAILWAY_VOLUME_MOUNT_PATH")
-            or __import__("os").getenv("DATA_DIR")
+            os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("DATA_DIR")
         )
+        on_railway = bool(os.getenv("RAILWAY_ENVIRONMENT"))
         logger.info(
-            "Persistance: %s (%s)",
+            "Persistance: %s | volume=%s | tendance=%s (%d trades, solde %.2f)",
             persist,
-            "volume/DATA_DIR" if has_vol else "local ./data — attache un volume Railway!",
+            has_vol,
+            self.config.trading.state_file,
+            len(self.tendance.trader.state.trades),
+            self.tendance.trader.state.balance,
         )
 
         await retry_async(self.market.start, attempts=8, label="market")
@@ -110,6 +115,15 @@ class Fleet:
         src = self.market.data_source_label()
         try:
             await self.telegram.send_raw(msg_fleet_startup(src))
+            if on_railway and not has_vol:
+                await self.telegram.send_raw(
+                    "⚠️ <b>Pas de volume Railway</b>\n"
+                    "Monte un volume sur <code>/app/data</code> sinon "
+                    "Tendance / Chasseur / Analyst perdent l'historique à chaque deploy.\n"
+                    f"État Tendance actuel : "
+                    f"<code>{len(self.tendance.trader.state.trades)}</code> trades, "
+                    f"solde <code>{self.tendance.trader.state.balance:.2f}</code>"
+                )
             await self.telegram.send_raw(
                 tendance_notif.msg_startup(
                     self.tendance.trader, self.config.trading, src

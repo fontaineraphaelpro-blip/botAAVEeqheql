@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from config import TradingConfig
 from utils.logger import setup_logger
@@ -15,6 +16,14 @@ logger = setup_logger(__name__)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _from_dict(cls, raw: dict[str, Any] | None):
+    """Charge un dataclass en ignorant les clés inconnues (évite reset au redeploy)."""
+    if not raw:
+        return None
+    allowed = {f.name for f in fields(cls)}
+    return cls(**{k: v for k, v in raw.items() if k in allowed})
 
 
 @dataclass
@@ -72,26 +81,66 @@ class PaperTrader:
         self.state_path = Path(cfg.state_file)
         self.state = self._load()
 
-    # ------------------------------------------------------------------ persistance
     def _load(self) -> PaperState:
         if self.state_path.exists():
             try:
                 raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-                pos = Position(**raw["position"]) if raw.get("position") else None
-                trades = [ClosedTrade(**t) for t in raw.get("trades", [])]
+                pos = _from_dict(Position, raw.get("position"))
+                trades = [
+                    t for t in (_from_dict(ClosedTrade, x) for x in raw.get("trades", []))
+                    if t is not None
+                ]
                 state = PaperState(
-                    balance=raw["balance"],
-                    start_balance=raw.get("start_balance", self.cfg.start_balance),
+                    balance=float(raw["balance"]),
+                    start_balance=float(raw.get("start_balance", self.cfg.start_balance)),
                     position=pos,
                     trades=trades,
                 )
                 logger.info(
-                    "État paper rechargé — solde %.2f USDT, %d trades, position: %s",
-                    state.balance, len(trades), pos.side_label if pos else "aucune",
+                    "Tendance état RECHARGÉ depuis %s — solde %.2f USDT, %d trades, pos=%s",
+                    self.state_path,
+                    state.balance,
+                    len(trades),
+                    pos.side_label if pos else "flat",
                 )
                 return state
             except Exception as exc:
-                logger.error("État paper illisible (%s) — reset", exc)
+                # Ne pas écraser le fichier corrompu : backup puis fail soft
+                bak = self.state_path.with_suffix(".bak")
+                try:
+                    bak.write_bytes(self.state_path.read_bytes())
+                    logger.error(
+                        "Tendance état illisible (%s) — backup %s, conserve le fichier",
+                        exc,
+                        bak,
+                    )
+                except Exception:
+                    logger.error("Tendance état illisible (%s) — reset forcé", exc)
+                    return PaperState(
+                        balance=self.cfg.start_balance,
+                        start_balance=self.cfg.start_balance,
+                    )
+                # tente de garder au moins balance si possible
+                try:
+                    raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+                    return PaperState(
+                        balance=float(raw.get("balance", self.cfg.start_balance)),
+                        start_balance=float(
+                            raw.get("start_balance", self.cfg.start_balance)
+                        ),
+                        position=None,
+                        trades=[],
+                    )
+                except Exception:
+                    return PaperState(
+                        balance=self.cfg.start_balance,
+                        start_balance=self.cfg.start_balance,
+                    )
+        logger.warning(
+            "Tendance: aucun fichier %s — NOUVEL état (0 trade). "
+            "Sur Railway: monte un volume sur /app/data sinon l'historique est perdu à chaque deploy.",
+            self.state_path,
+        )
         return PaperState(balance=self.cfg.start_balance, start_balance=self.cfg.start_balance)
 
     def save(self) -> None:
@@ -100,6 +149,7 @@ class PaperTrader:
             "start_balance": self.state.start_balance,
             "position": asdict(self.state.position) if self.state.position else None,
             "trades": [asdict(t) for t in self.state.trades],
+            "bot": "AAVE Tendance",
             "updated_at": _now_iso(),
         }
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,7 +157,6 @@ class PaperTrader:
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
         tmp.replace(self.state_path)
 
-    # ------------------------------------------------------------------ trading
     @property
     def in_position(self) -> bool:
         return self.state.position is not None
@@ -181,7 +230,6 @@ class PaperTrader:
             return False
         return bar_low <= pos.stop if pos.side == 1 else bar_high >= pos.stop
 
-    # ------------------------------------------------------------------ stats
     def stats(self) -> dict:
         trades = self.state.trades
         wins = [t for t in trades if t.pnl > 0]
