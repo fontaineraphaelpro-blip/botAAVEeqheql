@@ -111,35 +111,52 @@ class AnalystEngine:
 
     # ------------------------------------------------------------------ memory
     def load_memory(self) -> None:
-        path = self._runtime_mem if self._runtime_mem.exists() else self._seed_mem
-        if not path.exists():
-            raise FileNotFoundError(
-                f"Mémoire Analyst introuvable: {path}. "
-                "Lance scripts/build_analyst_memory.py puis redéploie."
-            )
-        # bootstrap runtime copy depuis le seed
-        if path == self._seed_mem and not self._runtime_mem.exists():
+        # Si le runtime a un mauvais horizon (ex. ancienne mémoire 12 barres),
+        # on écrase avec le seed models/ (nouveau build).
+        use_seed = False
+        if self._runtime_mem.exists():
+            try:
+                probe = PatternMemory.load(self._runtime_mem)
+                if (
+                    probe.params.lookback != self.params.lookback
+                    or probe.params.horizon != self.params.horizon
+                    or abs(probe.params.flat_pct - self.params.flat_pct) > 1e-9
+                ):
+                    logger.warning(
+                        "Mémoire runtime obsolète (h=%d flat=%.2f) → recharge seed h=%d",
+                        probe.params.horizon,
+                        probe.params.flat_pct,
+                        self.params.horizon,
+                    )
+                    use_seed = True
+            except Exception as exc:
+                logger.warning("Mémoire runtime illisible (%s) → seed", exc)
+                use_seed = True
+
+        if use_seed or not self._runtime_mem.exists():
+            if not self._seed_mem.exists():
+                raise FileNotFoundError(
+                    f"Mémoire Analyst introuvable: {self._seed_mem}. "
+                    "Lance scripts/build_analyst_memory.py puis redéploie."
+                )
             self._runtime_mem.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self._seed_mem, self._runtime_mem)
             meta = self._seed_mem.with_suffix(".json")
             if meta.exists():
                 shutil.copy2(meta, self._runtime_mem.with_suffix(".json"))
-            path = self._runtime_mem
+            # Corrélations seed aussi si horizon a changé
+            seed_corr = Path("models/analyst_correlations.json")
+            if seed_corr.exists():
+                shutil.copy2(seed_corr, self._corr_path)
 
+        path = self._runtime_mem
         self.memory = PatternMemory.load(path)
-        if (
-            self.memory.params.lookback != self.params.lookback
-            or self.memory.params.horizon != self.params.horizon
-        ):
-            logger.warning(
-                "Params mémoire (lb=%d h=%d) ≠ config — utilise mémoire",
-                self.memory.params.lookback,
-                self.memory.params.horizon,
-            )
-            self.params = self.memory.params
+        self.params = self.memory.params
         logger.info(
-            "Analyst mémoire: %d motifs depuis %s",
+            "Analyst mémoire: %d motifs | horizon=%d bougies (~%d min) depuis %s",
             self.memory.size,
+            self.params.horizon,
+            self.params.horizon * 5,
             path,
         )
         self.corr = CorrelationBook.load(self._corr_path)
@@ -437,98 +454,91 @@ class AnalystEngine:
         bar_ts = str(last_5m_ts)
         min_conf = self.effective_min_confidence()
         price = float(closed["close"].iloc[-1])
+        cooldown = (
+            self.cfg.alert_cooldown_bars
+            if self.cfg.alert_cooldown_bars > 0
+            else self.params.horizon
+        )
+        since_alert = (
+            self._bars_since(closed, self.state.last_alert_bar)
+            if self.state.last_alert_bar
+            else None
+        )
+        cooldown_ok = since_alert is None or since_alert >= cooldown
+        in_pos = self.trader.in_position
 
-        # Toujours enregistrer la prédiction pour apprendre (chaque bougie)
-        self.state.last_label = pred.label
-        self.state.last_pred_ts = bar_ts
-        if not any(p.get("bar_ts") == bar_ts for p in self.state.pending):
-            self.state.pending.append(
-                {
-                    "bar_ts": bar_ts,
-                    "direction": int(pred.direction),
-                    "price": price,
-                    "vec": vec.tolist(),
-                    "snapshot": snap,
-                    "alerted": False,
-                    "corr_why": corr_why,
-                }
-            )
-            if len(self.state.pending) > 400:
-                self.state.pending = self.state.pending[-400:]
-
+        # Analyse chaque barre (log), mais signal = mouvement sur `horizon` bougies
         logger.info(
-            "Analyst PRED %s conf=%.0f%% n=%d avg=%+.2f%% corr=%s %s",
+            "Analyst scan %s conf=%.0f%% n=%d avg=%+.2f%% (horizon=%db ~%dmin)%s",
             pred.label,
             pred.confidence * 100,
             pred.n_matches,
             pred.avg_fwd_pct,
-            corr_dir,
-            ",".join(corr_why[:2]) if corr_why else "-",
+            self.params.horizon,
+            self.params.horizon * 5,
+            " [en position]" if in_pos else "",
         )
 
-        if self.cfg.telegram_every_pred:
+        if self.cfg.telegram_every_pred and cooldown_ok and not in_pos:
             await self._send(
                 notif.msg_prediction(pred, price=price, bar_ts=bar_ts)
             )
 
-        # En continu : trade dès qu'on a une direction (UP/DOWN)
-        can_trade = pred.direction != 0 and pred.n_matches >= self.cfg.min_matches
+        can_signal = (
+            pred.direction != 0
+            and pred.n_matches >= self.cfg.min_matches
+            and cooldown_ok
+            and not in_pos
+        )
         if not self.cfg.continuous:
-            can_trade = (
-                can_trade
-                and pred.confidence >= min_conf
-                and pred.n_matches >= max(self.cfg.min_matches, 1)
-            )
+            can_signal = can_signal and pred.confidence >= min_conf
 
-        if can_trade:
-            since_alert = (
-                self._bars_since(closed, self.state.last_alert_bar)
-                if self.state.last_alert_bar
-                else None
-            )
-            cooldown_ok = (
-                since_alert is None or since_alert >= self.cfg.alert_cooldown_bars
-            )
-
-            pos = self.trader.state.position
-            if pos is not None and pred.direction == -pos.side:
-                trade = self.trader.close(price, "flip")
-                await self._send(notif.msg_close(trade, self.trader))
-                pos = None
-
-            if cooldown_ok and not self.trader.in_position:
-                try:
-                    opened = self.trader.open(
-                        pred.direction,
-                        price,
-                        entry_bar_ts=bar_ts,
-                        confidence=pred.confidence,
-                        pred_label=pred.label,
-                        stop_pct=self.cfg.stop_pct,
+        if can_signal:
+            # Un seul signal = un mouvement de `horizon` bougies (pas de flip mid-way)
+            try:
+                opened = self.trader.open(
+                    pred.direction,
+                    price,
+                    entry_bar_ts=bar_ts,
+                    confidence=pred.confidence,
+                    pred_label=pred.label,
+                    stop_pct=self.cfg.stop_pct,
+                )
+                await self._send(
+                    notif.msg_open(
+                        opened,
+                        pred,
+                        self.trader.state.balance,
+                        horizon_min=self.params.horizon * 5,
                     )
-                    await self._send(
-                        notif.msg_open(
-                            opened,
-                            pred,
-                            self.trader.state.balance,
-                            horizon_min=self.params.horizon * 5,
-                        )
-                    )
-                    self.state.alerts_today += 1
-                    self.state.last_alert_bar = bar_ts
-                    # marque ce pending comme trade pour notif resolve
-                    for p in self.state.pending:
-                        if p.get("bar_ts") == bar_ts:
-                            p["alerted"] = True
-                            break
-                    logger.info(
-                        "Analyst TRADE %s conf=%.0f%% n=%d",
-                        pred.label,
-                        pred.confidence * 100,
-                        pred.n_matches,
-                    )
-                except Exception as exc:
-                    logger.error("Analyst open: %s", exc)
+                )
+                self.state.alerts_today += 1
+                self.state.last_alert_bar = bar_ts
+                self.state.last_label = pred.label
+                self.state.last_pred_ts = bar_ts
+                self.state.pending.append(
+                    {
+                        "bar_ts": bar_ts,
+                        "direction": int(pred.direction),
+                        "price": price,
+                        "vec": vec.tolist(),
+                        "snapshot": snap,
+                        "alerted": True,
+                        "corr_why": corr_why,
+                        "horizon": self.params.horizon,
+                    }
+                )
+                if len(self.state.pending) > 200:
+                    self.state.pending = self.state.pending[-200:]
+                logger.info(
+                    "Analyst SIGNAL %s sur %d bougies conf=%.0f%% n=%d",
+                    pred.label,
+                    self.params.horizon,
+                    pred.confidence * 100,
+                    pred.n_matches,
+                )
+            except Exception as exc:
+                logger.error("Analyst open: %s", exc)
 
         self.save_state()
 

@@ -177,13 +177,15 @@ class AnalystConfig:
     """Mémoire de motifs AAVE 5m + paper trading pour apprendre des erreurs."""
 
     lookback: int = field(default_factory=lambda: _env_int("ANALYST_LOOKBACK", 24))
-    horizon: int = field(default_factory=lambda: _env_int("ANALYST_HORIZON", 12))
+    # Prédiction = mouvement sur N bougies 5m (5–10). Défaut 8 ≈ 40 min.
+    horizon: int = field(default_factory=lambda: _env_int("ANALYST_HORIZON", 8))
     top_k: int = field(default_factory=lambda: _env_int("ANALYST_TOP_K", 40))
     min_matches: int = field(default_factory=lambda: _env_int("ANALYST_MIN_MATCHES", 1))
     min_confidence: float = field(
         default_factory=lambda: _env_float("ANALYST_MIN_CONFIDENCE", 0.0)
     )
-    flat_pct: float = field(default_factory=lambda: _env_float("ANALYST_FLAT_PCT", 0.20))
+    # Seuil |fwd %| sur l'horizon pour labelliser UP/DOWN (mouvement multi-bougies)
+    flat_pct: float = field(default_factory=lambda: _env_float("ANALYST_FLAT_PCT", 0.35))
     max_distance: float = field(
         default_factory=lambda: _env_float("ANALYST_MAX_DISTANCE", 1.0)
     )
@@ -215,8 +217,9 @@ class AnalystConfig:
         default_factory=lambda: _env_float("ANALYST_SLIPPAGE_PCT", 0.03)
     )
     stop_pct: float = field(default_factory=lambda: _env_float("ANALYST_STOP_PCT", 2.5))
+    # Pas de nouveau signal avant la fin du mouvement prédit (= horizon)
     alert_cooldown_bars: int = field(
-        default_factory=lambda: _env_int("ANALYST_ALERT_COOLDOWN", 1)
+        default_factory=lambda: _env_int("ANALYST_ALERT_COOLDOWN", 0)  # 0 = =horizon
     )
     memory_save_every: int = field(
         default_factory=lambda: _env_int("ANALYST_MEMORY_SAVE_EVERY", 5)

@@ -1,9 +1,9 @@
 {
-  "size": 35029,
+  "size": 35030,
   "dim": 203,
   "lookback": 24,
-  "horizon": 12,
-  "flat_pct": 0.2,
+  "horizon": 8,
+  "flat_pct": 0.35,
   "built_from": "aave_5m_kucoin_12m.csv",
   "n_source_bars": 105200
 }

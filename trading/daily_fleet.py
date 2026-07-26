@@ -82,7 +82,7 @@ def msg_fleet_startup(source: str) -> str:
         f"🤖 <b>Flotte paper démarrée</b>\n"
         f"• <b>[{TAG_TENDANCE}]</b> {BOT_TENDANCE} — EMA flip 30m + filtres\n"
         f"• <b>[{TAG_CHASSEUR}]</b> {BOT_CHASSEUR} — shorts alts si BTC bear\n"
-        f"• <b>[{TAG_ANALYST}]</b> {BOT_ANALYST} — motifs AAVE → paper + apprentissage\n"
+        f"• <b>[{TAG_ANALYST}]</b> {BOT_ANALYST} — mouvement 8×5m + apprentissage\n"
         f"1 rapport/jour à 07:00 UTC · source AAVE : <code>{source}</code>\n"
         f"{_ts()}"
     )

@@ -38,12 +38,11 @@ def msg_startup(
     )
     return (
         f"{header(TAG_ANALYST, f'<b>{BOT_ANALYST}</b> démarré')}\n"
-        f"Paper continu · RSI/MACD/BB/ATR/Stoch/EMA/ER + corrélations\n"
-        f"Mémoire <code>{memory_size}</code> · analyse chaque 5m · "
-        f"horizon ~{horizon * 5} min\n"
+        f"Paper · prédît un <b>mouvement {horizon} bougies</b> (~{horizon * 5} min)\n"
+        f"Mémoire <code>{memory_size}</code> · pas de flip mid-signal\n"
         f"Solde <code>{s['balance']:.2f}</code> · {pos_line}\n"
         f"Précision live : <code>{acc}</code> ({hits}/{resolved})\n"
-        f"<i>Prédit + apprend sur chaque bougie · {source} · {_ts()}</i>"
+        f"<i>Apprend le mouvement multi-bougies · {source} · {_ts()}</i>"
     )
 
 
@@ -73,10 +72,11 @@ def msg_open(
     emoji = "🟢" if pos.side == 1 else "🔴"
     return (
         f"{header(TAG_ANALYST, f'{emoji} Paper <b>{pos.side_label}</b> @ <code>{pos.entry:.3f}</code>')}\n"
-        f"Signal {pred.label} · conf <code>{pred.confidence * 100:.0f}%</code> · "
+        f"Signal {pred.label} sur <b>{horizon_min // 5} bougies</b> (~{horizon_min} min) · "
+        f"conf <code>{pred.confidence * 100:.0f}%</code> · "
         f"<code>{pred.n_matches}</code> cas · stop <code>{pos.stop:.3f}</code>\n"
         f"Taille <code>{pos.qty:.3f}</code> AAVE · solde <code>{balance:.2f}</code>\n"
-        f"Sortie prévue ~{horizon_min} min (horizon) · {_ts()}"
+        f"Hold jusqu'à fin du mouvement · {_ts()}"
     )
 
 

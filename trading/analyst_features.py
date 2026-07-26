@@ -13,8 +13,8 @@ WARMUP = 80
 @dataclass(frozen=True)
 class FeatureParams:
     lookback: int = 24
-    horizon: int = 12
-    flat_pct: float = 0.20
+    horizon: int = 8
+    flat_pct: float = 0.35  # |fwd %| sur l'horizon multi-bougies
 
 
 DIR_LABEL = {1: "UP", -1: "DOWN", 0: "FLAT"}
